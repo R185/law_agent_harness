@@ -14,7 +14,9 @@
     G5  safe_html(), redact_secrets(), журнал событий — веб-интерфейс и логи
 
 Гарантии: публичные методы не бросают исключений и не обращаются к сети.
-Модель вызывается, только если передана функция llm(messages) -> str.
+Модель вызывается только в G1 для разметки вопроса и только если передана функция
+llm(messages) -> str. Отвечающую модель guard не вызывает, ответ не переписывает
+и текстов для пользователя не содержит: это зона вызывающего кода.
 
 Подробности и примеры подключения — в GUARD_SPEC.md.
 """
@@ -30,7 +32,7 @@ import re
 import secrets
 import threading
 import time
-from dataclasses import asdict, dataclass, field
+from dataclasses import dataclass, field
 from typing import Callable, Optional, Sequence, Union
 
 import guard_prompts as P
@@ -38,6 +40,7 @@ import guard_rules as R
 
 __all__ = [
     "Guard", "Finding", "Turn", "InputVerdict", "DocResult", "ContextResult", "OutputVerdict",
+    "RewriteHint",
     "safe_html", "strip_active_content", "prepare_for_display", "redact_secrets", "llm_from_env",
 ]
 
@@ -46,7 +49,7 @@ LLM = Callable[[list], str]
 ALLOW = "allow"                  # угроз нет, работать как обычно
 SANITIZE = "sanitize"            # отвечать по clean_question с учётом directives
 REFUSE_ASSIST = "refuse_assist"  # не помогать с нарушением, разъяснить требования по базе
-DECLINE = "decline"              # законного вопроса не осталось, выдать suggested_reply
+DECLINE = "decline"              # законного вопроса не осталось, причина в decline_reason
 
 PASS = "pass"
 REGENERATE = "regenerate"
@@ -67,7 +70,6 @@ class Finding:
     severity: str = "medium"   # low | medium | high
     excerpt: str = ""
     where: str = "question"    # question | history | hidden | document | context | answer
-    source: str = "rules"      # rules | llm
 
 
 @dataclass
@@ -87,7 +89,8 @@ class InputVerdict:
     clean_question: str = ""
     history: list = field(default_factory=list)
     directives: list = field(default_factory=list)
-    suggested_reply: Optional[str] = None
+    decline_reason: str = ""   # для decline: rules_attack | prompt_leak | offtopic
+    degraded: bool = False     # проверка не выполнена из-за внутреннего сбоя guard
 
     @property
     def history_text(self) -> str:
@@ -104,9 +107,6 @@ class InputVerdict:
             return self.clean_question
         return self.history_text + "\nПользователь: " + self.clean_question
 
-    def to_dict(self) -> dict:
-        return asdict(self)
-
 
 @dataclass
 class DocResult:
@@ -115,6 +115,7 @@ class DocResult:
     removed: list = field(default_factory=list)
     findings: list = field(default_factory=list)
     name: str = ""
+    degraded: bool = False
 
 
 @dataclass
@@ -123,6 +124,7 @@ class ContextResult:
     fragments: list = field(default_factory=list)
     removed: list = field(default_factory=list)
     findings: list = field(default_factory=list)
+    degraded: bool = False
 
     @property
     def text(self) -> str:
@@ -130,13 +132,22 @@ class ContextResult:
 
 
 @dataclass
+class RewriteHint:
+    """Что исправить в ответе. Материал для промпта переписывания, который собирает вызывающий код."""
+    code: str    # leak | echo | role | refs
+    quote: str   # фрагмент ответа или перечень ссылок, к которым относится замечание
+    fix: str     # формулировка замечания для модели
+
+
+@dataclass
 class OutputVerdict:
-    """Результат проверки ответа (G4)."""
+    """Результат проверки ответа (G4). Модель guard не вызывает и текст ответа не выбирает."""
     action: str = PASS
     findings: list = field(default_factory=list)
     clean_answer: str = ""
-    retry_message: str = ""
-    safe_answer: str = P.SAFE_ANSWER
+    rewrite_hints: list = field(default_factory=list)
+    fallback_reason: str = ""  # почему этот текст нельзя показывать, если переписать не удалось: empty | prompt_leak
+    degraded: bool = False     # проверка не выполнена из-за внутреннего сбоя guard
 
     @property
     def ok(self) -> bool:
@@ -189,7 +200,7 @@ def parse_dialog(text: str) -> tuple:
 
 
 def _safe(fallback: Callable):
-    """Публичный метод не должен ронять ответ: при сбое возвращается безопасное значение."""
+    """Публичный метод не должен ронять ответ: при сбое возвращается значение с degraded=True."""
     def deco(fn: Callable):
         @functools.wraps(fn)
         def wrapper(self, *args, **kwargs):
@@ -236,7 +247,6 @@ class Guard:
         self.canary = "GRD-" + secrets.token_hex(6)
         self._lock = threading.Lock()
         self._events = collections.deque(maxlen=5000)
-        self._sessions: dict = {}
         self._own_secrets = _secret_sentences(P.SECURITY_RULES.format(canary=""))
         self._registered_secrets: set = set()
         self._injections: list = []       # нормализованные вырезанные предложения
@@ -246,7 +256,7 @@ class Guard:
         self._kb_chars = 0
 
     # ------------------------------------------------------------------ G0
-    @_safe(lambda self, exc, text, name="": DocResult(str(text or ""), [], [_error_finding(exc, "document")], name))
+    @_safe(lambda self, exc, text, name="": DocResult(str(text or ""), [], [_error_finding(exc, "document")], name, True))
     def sanitize_document(self, text: str, name: str = "") -> DocResult:
         """G0. Убирает из документа базы знаний встроенные указания для ИИ и скрытые символы.
 
@@ -268,7 +278,8 @@ class Guard:
 
     # ------------------------------------------------------------------ G1
     @_safe(lambda self, exc, raw_question, llm=None: InputVerdict(
-        ALLOW, [], 0.0, [_error_finding(exc, "question")], str(raw_question or ""), str(raw_question or "")))
+        ALLOW, [], 0.0, [_error_finding(exc, "question")], str(raw_question or ""), str(raw_question or ""),
+        degraded=True))
     def inspect_question(self, raw_question: str, llm: Optional[LLM] = None) -> InputVerdict:
         """G1. Проверяет вопрос и историю диалога.
 
@@ -328,7 +339,7 @@ class Guard:
     # ------------------------------------------------------------------ G2
     @_safe(lambda self, exc, fragments: ContextResult(
         [fragments] if isinstance(fragments, str) else [str(f) for f in (fragments or [])],
-        [], [_error_finding(exc, "context")]))
+        [], [_error_finding(exc, "context")], True))
     def scan_context(self, fragments: Union[str, Sequence[str]]) -> ContextResult:
         """G2. Проверяет найденные фрагменты перед отправкой в модель.
 
@@ -397,7 +408,8 @@ class Guard:
 
     # ------------------------------------------------------------------ G4
     @_safe(lambda self, exc, answer, *a, **kw: OutputVerdict(
-        PASS if str(answer or "").strip() else REPLACE, [_error_finding(exc, "answer")], str(answer or "")))
+        PASS if str(answer or "").strip() else REPLACE, [_error_finding(exc, "answer")], str(answer or ""),
+        fallback_reason="" if str(answer or "").strip() else "empty", degraded=True))
     def check_answer(self, answer: str, context: Union[str, Sequence[str], None] = None,
                      strict_refs: bool = False,
                      question: Union[InputVerdict, str, None] = None) -> OutputVerdict:
@@ -419,7 +431,8 @@ class Guard:
         clean = text.replace(self.canary, "")
         clean = re.sub(r"\[\[/?DATA:[^\]]{0,40}\]\]", "", clean).strip()
         if not clean:
-            return OutputVerdict(REPLACE, [Finding("format", "format.empty", "high", "", "answer")], "")
+            return OutputVerdict(REPLACE, [Finding("format", "format.empty", "high", "", "answer")], "",
+                                 fallback_reason="empty")
 
         norm = R.norm_plain(clean)
         ctx_text = None if context is None else (
@@ -442,8 +455,9 @@ class Guard:
                                     "совпало предложений: %d" % (own_hits + reg_hits), "answer"))
         if "[[DATA:" in text or "[[/DATA:" in text:
             findings.append(Finding(R.PROMPT_LEAK, "leak.delimiter", "low", "", "answer"))
-        if any(f.severity == "high" for f in findings):
-            hints.append(P.RETRY_HINTS["leak"])
+        leaked = any(f.severity == "high" for f in findings)
+        if leaked:
+            hints.append(RewriteHint("leak", "", P.REWRITE_HINTS["leak"]))
 
         # повтор встроенной в документ инструкции
         echo = False
@@ -466,7 +480,8 @@ class Guard:
                     findings.append(Finding(R.DOC_INJECTION, "echo.number", "medium", num, "answer"))
                     echo = True
         if echo:
-            hints.append(P.RETRY_HINTS["echo"])
+            quotes = [f.excerpt for f in findings if f.rule.startswith("echo.")]
+            hints.append(RewriteHint("echo", "; ".join(dict.fromkeys(quotes)), P.REWRITE_HINTS["echo"]))
 
         # выход из роли
         shadow = R.shadow(clean)[0]
@@ -475,7 +490,7 @@ class Guard:
             if m:
                 findings.append(Finding(R.ROLE_CHANGE, "role.break", "medium",
                                         _excerpt(clean[m.start():m.end()]), "answer"))
-                hints.append(P.RETRY_HINTS["role"])
+                hints.append(RewriteHint("role", _excerpt(clean[m.start():m.end()]), P.REWRITE_HINTS["role"]))
                 break
 
         # ссылки, которых нет в контексте
@@ -485,7 +500,8 @@ class Guard:
                 findings.append(Finding("ungrounded_ref", "ref.unsupported",
                                         "medium" if strict_refs else "low", ", ".join(missing), "answer"))
                 if strict_refs:
-                    hints.append(P.RETRY_HINTS["refs"].format(refs=", ".join(missing)))
+                    hints.append(RewriteHint("refs", ", ".join(missing),
+                                             P.REWRITE_HINTS["refs"].format(refs=", ".join(missing))))
 
         # длина
         if len(clean) > self.max_answer_chars:
@@ -495,74 +511,16 @@ class Guard:
             findings.append(Finding("format", "format.too_long", "low", "", "answer"))
 
         action = REGENERATE if any(f.severity in ("medium", "high") for f in findings) else PASS
-        retry = (P.RETRY_PREFIX + " ".join(hints) + P.RETRY_SUFFIX) if action == REGENERATE else ""
         if findings:
             self._record("G4", {"action": action, "rules": sorted({f.rule for f in findings})})
-        return OutputVerdict(action, findings, clean, retry)
-
-    def answer_with_retry(self, llm: LLM, messages: list,
-                          context: Union[str, Sequence[str], None] = None,
-                          strict_refs: bool = False,
-                          question: Union[InputVerdict, str, None] = None) -> tuple:
-        """Вызывает модель, проверяет ответ и при необходимости один раз перегенерирует.
-
-        Возвращает (текст ответа, OutputVerdict последней проверки). Если повторный
-        ответ снова не прошёл проверку, заглушка verdict.safe_answer подставляется только
-        при утечке внутренних инструкций. В остальных случаях возвращается повторный
-        ответ, а verdict.ok остаётся False: вызывающий код решает сам.
-        """
-        try:
-            first = llm(messages)
-        except Exception as exc:  # noqa: BLE001
-            return P.SAFE_ANSWER, OutputVerdict(REPLACE, [_error_finding(exc, "answer")], "")
-        verdict = self.check_answer(first, context, strict_refs, question)
-        if verdict.action == PASS:
-            return verdict.clean_answer, verdict
-        if verdict.action == REGENERATE:
-            retry_messages = list(messages) + [
-                {"role": "assistant", "content": verdict.clean_answer},
-                {"role": "user", "content": verdict.retry_message},
-            ]
-            try:
-                second = llm(retry_messages)
-            except Exception as exc:  # noqa: BLE001
-                return verdict.safe_answer, OutputVerdict(REPLACE, [_error_finding(exc, "answer")], "")
-            verdict2 = self.check_answer(second, context, strict_refs, question)
-            if verdict2.action == PASS:
-                return verdict2.clean_answer, verdict2
-            leaked = any(f.category == R.PROMPT_LEAK and f.severity == "high" for f in verdict2.findings)
-            if leaked or verdict2.action == REPLACE:
-                return verdict2.safe_answer, verdict2
-            return verdict2.clean_answer, verdict2
-        return verdict.safe_answer, verdict
+        return OutputVerdict(action, findings, clean, hints if action == REGENERATE else [],
+                             "prompt_leak" if leaked else "")
 
     # ------------------------------------------------------------------ G5
     def events(self) -> list:
         """G5. Копия журнала событий (последние 5000)."""
         with self._lock:
             return list(self._events)
-
-    def stats(self) -> dict:
-        """G5. Сводка по журналу: сколько срабатываний на каждой точке и по каждой категории."""
-        points: dict = {}
-        categories: dict = {}
-        actions: dict = {}
-        for event in self.events():
-            points[event["point"]] = points.get(event["point"], 0) + 1
-            for cat in event.get("categories", []):
-                categories[cat] = categories.get(cat, 0) + 1
-            if "action" in event:
-                actions[event["action"]] = actions.get(event["action"], 0) + 1
-        return {"points": points, "categories": categories, "actions": actions}
-
-    def session_update(self, session_id: str, verdict: InputVerdict) -> dict:
-        """G5. Счётчик риска на сессию веб-чата: растёт с каждой попыткой атаки."""
-        with self._lock:
-            state = self._sessions.setdefault(str(session_id), {"attempts": 0, "level": "normal"})
-            if verdict.action != ALLOW and verdict.risk >= 0.6:
-                state["attempts"] += 1
-            state["level"] = "normal" if state["attempts"] < 2 else ("elevated" if state["attempts"] < 4 else "high")
-            return dict(state)
 
     # ------------------------------------------------------------ внутреннее
     def _record(self, point: str, data: dict) -> None:
@@ -702,13 +660,13 @@ class Guard:
             except Exception:  # noqa: BLE001
                 continue
         if data is None:
-            return clean_q, [Finding("classifier_error", "llm.bad_reply", "low", "", "question", "llm")]
+            return clean_q, [Finding("classifier_error", "llm.bad_reply", "low", "", "question")]
 
         allowed = R.ALL_CATEGORIES - {R.OBFUSCATION, R.DOS, R.DOC_INJECTION}
         categories = [c for c in data.get("categories", []) if isinstance(c, str) and c in allowed]
         spans_text = [s for s in data.get("attack_spans", []) if isinstance(s, str) and s.strip()]
         legit = bool(data.get("has_legit_question", True))
-        findings = [Finding(c, "llm." + c, "medium", _excerpt(" | ".join(spans_text)), "question", "llm")
+        findings = [Finding(c, "llm." + c, "medium", _excerpt(" | ".join(spans_text)), "question")
                     for c in categories]
         shadow = R.shadow(clean_q)[0]
         if R.ILLEGAL_INFO.search(shadow) and not R.ILLEGAL_HOWTO.search(shadow):
@@ -775,19 +733,19 @@ class Guard:
         if has_assistant_turn:
             directives.append(P.DIRECTIVES["history"])
 
-        reply = None
+        reason = ""
         if action == DECLINE:
             if q_cats & _RULES_ATTACK:
-                reply = P.REPLIES["rules_attack"]
+                reason = "rules_attack"
             elif R.PROMPT_LEAK in q_cats:
-                reply = P.REPLIES["prompt_leak"]
+                reason = "prompt_leak"
             else:
-                reply = P.REPLIES["offtopic"]
+                reason = "offtopic"
 
         weights = [R.SEVERITY_WEIGHT.get(f.severity, 0.0) for f in findings if f.category in R.ALL_CATEGORIES]
         risk = min(1.0, max(weights) + 0.05 * (len(weights) - 1)) if weights else 0.0
         return InputVerdict(action, categories, round(risk, 2), findings, question_raw, clean_q,
-                            history, directives, reply)
+                            history, directives, reason)
 
     @staticmethod
     def _unsupported_refs(answer: str, context: str) -> list:

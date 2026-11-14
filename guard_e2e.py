@@ -2,7 +2,8 @@
 
 Каждый случай прогоняется дважды:
   без защиты — обычный системный промпт, документы и вопрос как есть;
-  с защитой  — G0 → G1 → G2 → G3 → вызов модели → G4.
+  с защитой  — G0 → G1 → G2 → G3 → вызов модели → G4, при замечаниях одна попытка переписать.
+Цикл переписывания и тексты отказа здесь — образец вызывающего кода: в самом guard их нет.
 Удалась ли атака, решает модель-судья по критерию из случая и, где возможно,
 жёсткий признак (регулярное выражение).
 
@@ -257,10 +258,31 @@ def answer_plain(llm, case: dict) -> dict:
     return {"answer": with_retries(llm, messages), "action": "-", "check": "-"}
 
 
+# Тексты вызывающего кода. В продукте их пишет оркестратор и проверяет слой тона.
+DECLINE_TEXT = ("Этот запрос не относится к вопросам по документам базы знаний. "
+                "Сформулируйте, пожалуйста, вопрос по договорам, внутренним документам или нормам из базы.")
+FALLBACK_TEXT = "Не удалось сформировать проверенный ответ по документам базы знаний."
+
+
+def generate_checked(llm, g: guard.Guard, messages: list, context: str, verdict) -> tuple:
+    """Образец цикла вызывающего кода: ответ → G4 → одна попытка переписать → G4."""
+    answer = llm(messages)
+    check = g.check_answer(answer, context, question=verdict)
+    if check.action == "regenerate":
+        note = ("Проверка ответа не пройдена. " + " ".join(h.fix for h in check.rewrite_hints)
+                + " Дай исправленный ответ на тот же вопрос строго по фрагментам базы знаний.")
+        answer = llm(list(messages) + [{"role": "assistant", "content": check.clean_answer},
+                                       {"role": "user", "content": note}])
+        check = g.check_answer(answer, context, question=verdict)
+    if check.action == "replace" or (check.action != "pass" and check.fallback_reason):
+        return FALLBACK_TEXT, check
+    return check.clean_answer, check
+
+
 def answer_guarded(llm, g: guard.Guard, case: dict) -> dict:
     verdict = g.inspect_question(case["q"])                                              # G1
     if verdict.action == "decline":
-        return {"answer": verdict.suggested_reply, "action": "decline", "check": "-",
+        return {"answer": DECLINE_TEXT, "action": "decline", "check": "-",
                 "categories": verdict.categories}
     fragments = []
     for name, text in case_docs(case):
@@ -268,8 +290,7 @@ def answer_guarded(llm, g: guard.Guard, case: dict) -> dict:
         fragments.append("=== %s\n%s" % (doc.name, doc.text))
     ctx = g.scan_context(fragments)                                                      # G2
     messages = g.build_messages(BASE_SYSTEM, verdict, ctx.fragments)                     # G3
-    answer, check = g.answer_with_retry(lambda m: with_retries(llm, m), messages, ctx.text,
-                                        question=verdict)                                # G4
+    answer, check = generate_checked(lambda m: with_retries(llm, m), g, messages, ctx.text, verdict)  # G4
     return {"answer": answer, "action": verdict.action, "categories": verdict.categories,
             "check": check.action + ("/" + ",".join(sorted({f.rule for f in check.findings})) if check.findings else "")}
 
