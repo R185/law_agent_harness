@@ -6,6 +6,7 @@ from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta
 from typing import Any
 
+from rag import config
 from rag.text import canonical_doc_num, extract_doc_numbers, norm_str
 
 
@@ -265,6 +266,7 @@ def build_document_metadata(path: str, clean_text: str, removed_lines: list[str]
         "effective_to": effective_to,
         "version_group": version_group,
         "refs": refs,
+        "broken_refs": [],
     }
 
     if is_law:
@@ -272,6 +274,19 @@ def build_document_metadata(path: str, clean_text: str, removed_lines: list[str]
         meta.update(law_meta)
         if law_meta.get("article"):
             title = f"{law_meta.get('law_code', '')} ст. {law_meta.get('article', '')} «{law_meta.get('article_title', '')}»".strip()
+
+        # Find mentions of other articles like "статьи 6, 10 и 11"
+        mentioned_articles: list[str] = []
+        for m in re.finditer(r"стать[ейяиюь]\s+([\d.,\sи-]+)(?:настоящего\s+(?:Федерального\s+закона|Кодекса))?", clean_text, re.I):
+            num_tokens = re.findall(r"\b\d+(?:\.\d+)?\b", m.group(1))
+            for num in num_tokens:
+                if num != meta.get("article") and num not in mentioned_articles:
+                    mentioned_articles.append(num)
+                    refs.append({
+                        "type": "mentions",
+                        "target_law": meta.get("law_code", ""),
+                        "target_article": num,
+                    })
 
     return Document(
         doc_id=doc_id,
@@ -283,6 +298,41 @@ def build_document_metadata(path: str, clean_text: str, removed_lines: list[str]
         meta=meta,
         removed_lines=removed_lines,
     )
+
+
+def resolve_applicable_edition(
+    doc: Document, event_date_str: str | None = None, today_str: str | None = None
+) -> tuple[bool, str]:
+    """Determine whether the document edition is applicable based on event_date or current date."""
+    eff_from = doc.meta.get("effective_from")
+    eff_to = doc.meta.get("effective_to")
+    status = doc.meta.get("status", "active")
+
+    if event_date_str:
+        e_date = event_date_str[:7]
+        f_date = (eff_from[:7] if eff_from else "0000-00")
+        t_date = (eff_to[:7] if eff_to else "9999-99")
+        if f_date <= e_date <= t_date:
+            return True, f"Действовала на дату события ({event_date_str})"
+        else:
+            note = f"Не действовала на дату события ({event_date_str})"
+            if eff_to and e_date > eff_to[:7]:
+                note += f": утратила силу с {eff_to}"
+            elif eff_from and e_date < eff_from[:7]:
+                note += f": вступила в силу позже ({eff_from})"
+            return False, note
+
+    # No event date: evaluate against TODAY
+    current_date = today_str or config.get_current_date()
+    cur_m = current_date[:7]
+
+    if status == "repealed" or (eff_to and cur_m > eff_to[:7]):
+        return False, f"Утратила силу" + (f" с {eff_to}" if eff_to else "")
+
+    if eff_from and cur_m < eff_from[:7]:
+        return False, f"Вступает в силу с {eff_from}"
+
+    return True, "Действующая редакция"
 
 
 class DocGraph:
@@ -346,8 +396,22 @@ def build_doc_graph(docs: list[Document]) -> DocGraph:
                 target_id = num_to_doc[target_num]
                 if ref_type == "amends":
                     graph.add_edge(d.doc_id, target_id, "amends", "amended_by")
-                else:
-                    graph.add_edge(d.doc_id, target_id, "mentions", "mentioned_by")
+            if ref_type == "mentions":
+                if target_num and target_num in num_to_doc:
+                    graph.add_edge(d.doc_id, num_to_doc[target_num], "mentions", "mentioned_by")
+                elif ref.get("target_law") and ref.get("target_article"):
+                    t_law = ref["target_law"]
+                    t_art = ref["target_article"]
+                    found_target = False
+                    for candidate in docs:
+                        if candidate.meta.get("law_code") == t_law and candidate.meta.get("article") == t_art:
+                            graph.add_edge(d.doc_id, candidate.doc_id, "mentions", "mentioned_by")
+                            found_target = True
+                            break
+                    if not found_target:
+                        missing_ref = f"{t_law} ст. {t_art}"
+                        if missing_ref not in d.meta.get("broken_refs", []):
+                            d.meta.setdefault("broken_refs", []).append(missing_ref)
 
             if ref_type == "supplements":
                 target_title = ref.get("target_title", "")

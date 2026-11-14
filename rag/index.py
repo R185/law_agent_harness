@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import sys
 from pathlib import Path
 from typing import Sequence
 
@@ -94,6 +95,7 @@ class KBIndex:
         emb_file = index_dir / "embeddings.npy"
 
         if not manifest_file.is_file() or not emb_file.is_file():
+            print(f"[INDEX] Precomputed embeddings not found in {index_dir}; falling back to BM25 sparse index", file=sys.stderr)
             return False
 
         try:
@@ -107,8 +109,13 @@ class KBIndex:
                 arr = np.load(emb_file)
                 self.embeddings = arr.astype(np.float32)
                 return True
-        except Exception:
-            pass
+            else:
+                print(
+                    f"[INDEX] Precomputed index mismatch (cached model: '{cached_model}', current: '{config.EMB_MODEL}'); falling back to BM25",
+                    file=sys.stderr,
+                )
+        except Exception as exc:
+            print(f"[INDEX] Failed to load precomputed embeddings: {exc}; falling back to BM25", file=sys.stderr)
         return False
 
     def ensure_embeddings(self, client: ApiClient | None, index_dir: Path | None = None) -> None:
@@ -118,6 +125,7 @@ class KBIndex:
 
         # If no client or embedding key, dense search will be gracefully disabled
         if not client or not config.EMBED_KEY:
+            print("[INDEX] Embedder client/key not configured; dense vector indexing skipped", file=sys.stderr)
             return
 
         # Compute missing embeddings via API in batches of 32
@@ -153,5 +161,6 @@ class KBIndex:
             scores = self.embeddings @ q_vec
             top_indices = np.argsort(-scores)[:top_k]
             return [(int(idx), float(scores[idx])) for idx in top_indices if scores[idx] > 0.0]
-        except Exception:
+        except Exception as exc:
+            print(f"[INDEX] Dense search error for query '{query[:40]}': {exc}; using sparse results", file=sys.stderr)
             return []

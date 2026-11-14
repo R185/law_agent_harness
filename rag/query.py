@@ -2,12 +2,13 @@ from __future__ import annotations
 
 import json
 import re
+import sys
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, Sequence
 
 from rag import config
 from rag.api import ApiClient
-from rag.text import extract_doc_numbers, norm_str
+from rag.text import extract_doc_numbers, norm_str, tokenize, _stem_fn
 
 
 @dataclass
@@ -119,12 +120,14 @@ def extract_event_date_heuristic(text: str) -> str | None:
     return None
 
 
-def extract_entities_heuristic(dialog: ParsedDialog) -> tuple[list[str], list[str]]:
-    """Extract organizations and document numbers, prioritizing user's current turn."""
+def extract_entities_heuristic(
+    dialog: ParsedDialog, known_parties: Sequence[str] | None = None
+) -> tuple[list[str], list[str]]:
+    """Extract organizations and document numbers dynamically without hardcoded entity names."""
     full_text = f"{dialog.history}\n{dialog.last_user}" if dialog.history else dialog.last_user
     doc_nums = extract_doc_numbers(full_text)
 
-    # Check organizations mentioned specifically in last user message
+    # 1. Extract quoted entities from last user message
     curr_orgs: list[str] = []
     for match in re.finditer(r"[«\"]([^»\"]+)[»\"]", dialog.last_user):
         val = match.group(1).strip()
@@ -132,22 +135,48 @@ def extract_entities_heuristic(dialog: ParsedDialog) -> tuple[list[str], list[st
             if val not in curr_orgs:
                 curr_orgs.append(val)
 
-    lower_last = dialog.last_user.lower()
-    if re.search(r"\bальфа-трейдинг\b", lower_last):
-        if "Альфа-Трейдинг" not in curr_orgs:
-            curr_orgs.append("Альфа-Трейдинг")
-    elif re.search(r"\bальфа-трейд\b", lower_last):
-        if "Альфа-Трейд" not in curr_orgs:
-            curr_orgs.append("Альфа-Трейд")
+    # 2. Match against known parties dynamically (longest names first)
+    if known_parties:
+        # Sort by length descending so "Альфа-Трейдинг" matches before "Альфа"
+        sorted_known = sorted(set(known_parties), key=lambda x: len(x), reverse=True)
+        user_lower = norm_str(dialog.last_user)
+        user_tokens = set(tokenize(user_lower))
 
-    if "северный склад" in lower_last and "Северный Склад" not in curr_orgs:
-        curr_orgs.append("Северный Склад")
+        for party in sorted_known:
+            party_clean = party.strip()
+            if not party_clean or party_clean.lower() in {"ооо", "ао", "пао", "зао", "ип"}:
+                continue
+            party_norm = norm_str(party_clean)
+            # Exact boundary search or token stem match
+            pattern = r"\b" + re.escape(party_norm) + r"\b"
+            if re.search(pattern, user_lower):
+                if party_clean not in curr_orgs:
+                    curr_orgs.append(party_clean)
+            else:
+                p_tokens = set(tokenize(party_norm)) - {"ооо", "ао", "пао", "зао", "ип"}
+                if p_tokens and (p_tokens == user_tokens or p_tokens.issubset(user_tokens)):
+                    if party_clean not in curr_orgs:
+                        curr_orgs.append(party_clean)
 
-    # If user explicitly specified org in last turn, use that!
+        # Check if user has an isolated token that is an ambiguous prefix for known parties (e.g. "Альфа")
+        if not curr_orgs:
+            for token in user_tokens:
+                if len(token) >= 4 and token not in {"договор", "договора", "договоре", "условия", "какие", "какой", "срок", "соглашение", "соглашения"}:
+                    matching_known = [
+                        p for p in sorted_known
+                        if any(token == _stem_fn(w) or w.startswith(token) for w in tokenize(norm_str(p)) if w not in {"ооо", "ао", "пао", "зао", "ип"})
+                    ]
+                    if len(matching_known) > 1:
+                        m_case = re.search(r"\b" + re.escape(token) + r"\b", dialog.last_user, re.I)
+                        extracted = m_case.group(0) if m_case else token
+                        curr_orgs.append(extracted.capitalize())
+                        break
+
+    # If user explicitly specified org in last turn, prioritize it
     if curr_orgs:
         return curr_orgs, doc_nums
 
-    # Otherwise extract from full history
+    # Otherwise extract from full dialogue history
     orgs: list[str] = []
     for match in re.finditer(r"[«\"]([^»\"]+)[»\"]", full_text):
         val = match.group(1).strip()
@@ -155,18 +184,25 @@ def extract_entities_heuristic(dialog: ParsedDialog) -> tuple[list[str], list[st
             if val not in orgs:
                 orgs.append(val)
 
-    lower_t = full_text.lower()
-    if re.search(r"\bальфа-трейдинг\b", lower_t):
-        if "Альфа-Трейдинг" not in orgs:
-            orgs.append("Альфа-Трейдинг")
-    elif re.search(r"\bальфа-трейд\b", lower_t):
-        if "Альфа-Трейд" not in orgs:
-            orgs.append("Альфа-Трейд")
-    elif "альф" in lower_t and not any("альфа" in o.lower() for o in orgs):
-        orgs.append("Альфа")
+    if known_parties:
+        sorted_known = sorted(set(known_parties), key=lambda x: len(x), reverse=True)
+        full_lower = norm_str(full_text)
+        full_tokens = set(tokenize(full_lower))
 
-    if "северный склад" in lower_t and "Северный Склад" not in orgs:
-        orgs.append("Северный Склад")
+        for party in sorted_known:
+            party_clean = party.strip()
+            if not party_clean or party_clean.lower() in {"ооо", "ао", "пао", "зао", "ип"}:
+                continue
+            party_norm = norm_str(party_clean)
+            pattern = r"\b" + re.escape(party_norm) + r"\b"
+            if re.search(pattern, full_lower):
+                if party_clean not in orgs:
+                    orgs.append(party_clean)
+            else:
+                p_tokens = set(tokenize(party_norm)) - {"ооо", "ао", "пао", "зао", "ип"}
+                if p_tokens and (p_tokens == full_tokens or p_tokens.issubset(full_tokens)):
+                    if party_clean not in orgs:
+                        orgs.append(party_clean)
 
     return orgs, doc_nums
 
@@ -185,23 +221,28 @@ QUERY_ANALYZER_SYSTEM = """Ты — модуль анализа запросов
 
 
 def analyze_query(
-    raw_question: str, client: ApiClient | None = None
+    raw_question: str, client: ApiClient | None = None, known_parties: Sequence[str] | None = None
 ) -> tuple[ParsedDialog, QueryAnalysis]:
     """Parse dialogue and analyze user question with LLM and robust heuristic fallback."""
     dialog = parse_dialog(raw_question)
     last_user = dialog.last_user
     history = dialog.history
 
-    # Run heuristic extractor
+    # Run heuristic extractor dynamically
     full_text = f"{history}\n{last_user}" if history else last_user
-    h_orgs, h_doc_nums = extract_entities_heuristic(dialog)
+    h_orgs, h_doc_nums = extract_entities_heuristic(dialog, known_parties=known_parties)
     h_event_date = extract_event_date_heuristic(full_text)
 
-    # Check for ambiguity in entities
+    # Dynamic check for ambiguity in entities:
+    # An entity is ambiguous if it matches multiple different known parties as a prefix or subword
     ambiguous: list[str] = []
-    for org in h_orgs:
-        if org.lower() in {"альфа", "северный"}:
-            ambiguous.append(org)
+    if known_parties:
+        for org in h_orgs:
+            norm_o = norm_str(org).strip()
+            if len(norm_o) >= 3:
+                matches = [p for p in set(known_parties) if norm_o in norm_str(p)]
+                if len(matches) > 1:
+                    ambiguous.append(org)
 
     # Heuristic fallback standalone question
     h_standalone = last_user

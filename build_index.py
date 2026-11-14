@@ -13,11 +13,16 @@ from rag.metadata import build_doc_graph, build_document_metadata
 from rag.sanitize import sanitize_text
 
 
-def build_index(dump: bool = False, embed: bool = False, index_dir_path: Path | None = None) -> None:
+def build_index(
+    dump: bool = False,
+    embed: bool = False,
+    index_dir_path: Path | None = None,
+    kb_path: Path | None = None,
+) -> None:
     target_dir = index_dir_path or (Path(__file__).resolve().parent / "index")
     print(f"[BUILD] Загрузка документов базы знаний...", flush=True)
 
-    raw_docs = load_raw_documents()
+    raw_docs = load_raw_documents(source_path=kb_path)
     docs = []
     for rd in raw_docs:
         clean_text, removed = sanitize_text(rd.text, rd.path)
@@ -61,7 +66,8 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Сборка офлайн индекса базы знаний")
     parser.add_argument("--dump", action="store_true", help="Напечатать статистику чанкинга")
     parser.add_argument("--embed", action="store_true", help="Рассчитать эмбеддинги через API")
+    parser.add_argument("--kb", type=Path, default=None, help="Путь к zip-архиву или папке базы знаний")
     parser.add_argument("--out", type=Path, default=None, help="Путь к директории индекса")
     args = parser.parse_args()
 
-    build_index(dump=args.dump, embed=args.embed, index_dir_path=args.out)
+    build_index(dump=args.dump, embed=args.embed, index_dir_path=args.out, kb_path=args.kb)

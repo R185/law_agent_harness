@@ -40,7 +40,7 @@ def process_question(
                 else None
             )
 
-            ranked_chunks, low_conf = retrieve_candidates(
+            retrieval_res = retrieve_candidates(
                 analysis=analysis,
                 chunks=kb_index.chunks,
                 docs=kb_index.docs,
@@ -51,14 +51,10 @@ def process_question(
                 client=client,
             )
 
-            # 3. Build context cards
-            context = build_context_cards(
-                ranked_chunks=ranked_chunks,
-                docs=kb_index.docs,
-                graph=graph,
-                analysis=analysis,
-                is_ambiguous=bool(analysis.ambiguous_entities),
-            )
+            # 3. Build context
+            from rag.tools import build_context
+            context_res = build_context(retrieval_res)
+            context = context_res.text
 
             # 4. Generate answer
             answer = generate_answer(
@@ -66,14 +62,14 @@ def process_question(
                 dialog=dialog,
                 analysis=analysis,
                 context=context,
-                low_confidence=low_conf,
+                low_confidence=retrieval_res.signals.low_confidence,
             )
 
             elapsed = time.time() - t0
             top_info = (
-                f"{ranked_chunks[0][0].header[:40]}... (score: {ranked_chunks[0][1]:.2f})"
-                if ranked_chunks
-                else "no chunks"
+                f"{retrieval_res.documents[0].title[:35]} (rel: {retrieval_res.documents[0].relevance:.2f})"
+                if retrieval_res.documents
+                else "no docs"
             )
             print(
                 f"[SOLVE] Q{qid} done in {elapsed:.2f}s | Top: {top_info}",

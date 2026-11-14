@@ -61,8 +61,6 @@ CONTEXT_MAX_CHARS = env_int("CONTEXT_MAX_CHARS", 12000, 1000, 50000)
 
 RERANK_EMPTY_THRESHOLD = env_float("RERANK_EMPTY_THRESHOLD", 0.15, 0.0, 1.0)
 RERANK_WITH_INSTRUCTION = env_bool("RERANK_WITH_INSTRUCTION", True)
-ENABLE_JUDGE = env_bool("ENABLE_JUDGE", False)  # Disabled by default until judge is tuned
-ENABLE_FOLLOWUP = env_bool("ENABLE_FOLLOWUP", False)
 ENABLE_QUERY_LLM = env_bool("ENABLE_QUERY_LLM", True)
 
 # Boosts and penalties
@@ -80,3 +78,10 @@ SMALL_ARTICLE_CHARS = env_int("SMALL_ARTICLE_CHARS", 2500, 500, 10000)
 
 TODAY = env("TODAY", "")
 FALLBACK = "Не удалось получить ответ."
+
+
+def get_current_date(default_date: str = "2026-11-09") -> str:
+    """Return effective 'today' date from TODAY env or default fallback."""
+    if TODAY:
+        return TODAY
+    return default_date
