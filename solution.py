@@ -7,7 +7,6 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
 from rag import config
-from rag.answer import generate_answer
 from rag.api import ApiClient
 from rag.context import build_context_cards
 from rag.index import KBIndex
@@ -15,7 +14,30 @@ from rag.loader import find_file, load_questions, load_raw_documents
 from rag.metadata import build_doc_graph, build_document_metadata
 from rag.query import analyze_query
 from rag.retrieve import EntityResolver, retrieve_candidates
-from rag.sanitize import sanitize_text
+from rag.text import normalize_whitespace
+from rag.tools import build_context
+
+
+def generate_simple_answer(client: ApiClient, question: str, context: str) -> str:
+    """Minimal direct LLM invocation using retrieved context without external guard/tone checks."""
+    messages = [
+        {
+            "role": "system",
+            "content": "Ты — юридический ассистент ООО «Меридиан». Отвечай на вопрос строго по предоставленным фрагментам базы знаний. Если информации недостаточно, укажи это.",
+        },
+        {
+            "role": "user",
+            "content": f"Фрагменты базы знаний:\n{context}\n\nВопрос: {question}",
+        },
+    ]
+    try:
+        raw_ans = client.chat_completion(
+            messages=messages, temperature=config.TEMPERATURE, max_tokens=config.MAX_TOKENS
+        )
+        return raw_ans.strip() or config.FALLBACK
+    except Exception as exc:
+        print(f"[GEN] LLM call failed: {exc}", file=sys.stderr)
+        return config.FALLBACK
 
 
 def process_question(
@@ -52,17 +74,14 @@ def process_question(
             )
 
             # 3. Build context
-            from rag.tools import build_context
             context_res = build_context(retrieval_res)
             context = context_res.text
 
             # 4. Generate answer
-            answer = generate_answer(
+            answer = generate_simple_answer(
                 client=client,
-                dialog=dialog,
-                analysis=analysis,
+                question=dialog.last_user,
                 context=context,
-                low_confidence=retrieval_res.signals.low_confidence,
             )
 
             elapsed = time.time() - t0
@@ -94,12 +113,12 @@ def main() -> None:
     questions = load_questions(q_path)
     print(f"[MAIN] Загружено вопросов: {len(questions)} из {q_path}", flush=True)
 
-    # 2. Load and sanitize documents
+    # 2. Load documents
     raw_docs = load_raw_documents()
     docs = []
     for rd in raw_docs:
-        clean_text, removed = sanitize_text(rd.text, rd.path)
-        doc = build_document_metadata(rd.path, clean_text, removed)
+        clean_text = normalize_whitespace(rd.text)
+        doc = build_document_metadata(rd.path, clean_text)
         docs.append(doc)
 
     print(f"[MAIN] Загружено документов базы знаний: {len(docs)}", flush=True)

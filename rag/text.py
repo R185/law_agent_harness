@@ -50,6 +50,19 @@ DASH_RE = re.compile(r"[‐-‒–—−]")
 QUOTE_RE = re.compile(r"[«»“”„\"']")
 DOCNUM_RE = re.compile(r"(?:№\s*)?([A-ZА-ЯЁ]{1,4})[\s-]?(\d{1,4})(?:[/-](\d{2,4}))?", re.I)
 
+_SPACE_RE = re.compile(r"[\u00a0\u2009\u202f\t]+")
+_MULTI_NL_RE = re.compile(r"\n{3,}")
+
+
+def normalize_whitespace(text: str) -> str:
+    """Normalize newlines and spaces while preserving quotes and letters."""
+    text = text.replace("\r\n", "\n").replace("\r", "\n")
+    text = _SPACE_RE.sub(" ", text)
+    lines = [line.strip() for line in text.split("\n")]
+    text = "\n".join(lines)
+    text = _MULTI_NL_RE.sub("\n\n", text)
+    return text.strip()
+
 
 def norm_str(s: str) -> str:
     """Normalize characters, lowercasing and replacing ё, quotes, dashes."""

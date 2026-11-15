@@ -10,7 +10,7 @@ from rag.chunker import chunk_document
 from rag.index import KBIndex
 from rag.loader import load_raw_documents
 from rag.metadata import build_doc_graph, build_document_metadata
-from rag.sanitize import sanitize_text
+from rag.text import normalize_whitespace
 
 
 def build_index(
@@ -25,8 +25,8 @@ def build_index(
     raw_docs = load_raw_documents(source_path=kb_path)
     docs = []
     for rd in raw_docs:
-        clean_text, removed = sanitize_text(rd.text, rd.path)
-        doc = build_document_metadata(rd.path, clean_text, removed)
+        clean_text = normalize_whitespace(rd.text)
+        doc = build_document_metadata(rd.path, clean_text)
         docs.append(doc)
 
     print(f"[BUILD] Документов: {len(docs)}", flush=True)

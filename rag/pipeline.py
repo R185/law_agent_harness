@@ -4,7 +4,6 @@ from pathlib import Path
 from typing import Sequence
 
 from rag import config
-from rag.answer import generate_answer
 from rag.api import ApiClient
 from rag.context import build_context_cards
 from rag.index import KBIndex
@@ -12,7 +11,7 @@ from rag.loader import load_raw_documents
 from rag.metadata import DocGraph, Document, build_doc_graph, build_document_metadata
 from rag.query import ParsedDialog, QueryAnalysis, analyze_query, parse_dialog
 from rag.retrieve import EntityResolver, retrieve_candidates
-from rag.sanitize import sanitize_text
+from rag.text import normalize_whitespace
 from rag.schema import (
     CitationCheck,
     ContextResult,
@@ -36,8 +35,8 @@ class RAGPipeline:
         raw_docs = load_raw_documents(source_path)
         self.docs: list[Document] = []
         for rd in raw_docs:
-            clean_text, removed = sanitize_text(rd.text, rd.path)
-            doc = build_document_metadata(rd.path, clean_text, removed)
+            clean_text = normalize_whitespace(rd.text)
+            doc = build_document_metadata(rd.path, clean_text)
             self.docs.append(doc)
 
         self.graph: DocGraph = build_doc_graph(self.docs)
@@ -127,27 +126,6 @@ class RAGPipeline:
     def get_clause(self, doc_id: str, clause: str) -> Evidence | None:
         """Retrieve specific clause Evidence by doc_id and clause number."""
         return tool_get_clause(doc_id, clause, docs=self.docs)
-
-    def ask(self, question: str, history: str | None = None, client: ApiClient | None = None) -> str:
-        """End-to-end convenience method: retrieve + generate answer (for standalone CLI / tests)."""
-        res = self.retrieve(question, history=history, client=client)
-        dialog = parse_dialog(f"{history}\n{question}" if history else question)
-        if not client:
-            with ApiClient(timeout=90.0) as cli:
-                return generate_answer(
-                    client=cli,
-                    dialog=dialog,
-                    analysis=res.signals,  # type: ignore
-                    context=res.context,
-                    low_confidence=res.signals.low_confidence,
-                )
-        return generate_answer(
-            client=client,
-            dialog=dialog,
-            analysis=res.signals,  # type: ignore
-            context=res.context,
-            low_confidence=res.signals.low_confidence,
-        )
 
 
 # Global default instance for top-level retrieve() calls

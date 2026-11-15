@@ -140,7 +140,7 @@ def parse_law_meta(path: str, text: str) -> dict[str, Any]:
     return meta
 
 
-def build_document_metadata(path: str, clean_text: str, removed_lines: list[str]) -> Document:
+def build_document_metadata(path: str, clean_text: str, removed_lines: list[str] | None = None) -> Document:
     """Extract metadata, classification and references for a document."""
     doc_id = hashlib.sha1(path.encode("utf-8")).hexdigest()[:12]
     lines = [line.strip() for line in clean_text.split("\n") if line.strip()]
@@ -296,7 +296,7 @@ def build_document_metadata(path: str, clean_text: str, removed_lines: list[str]
         doc_type=doc_type,
         text=clean_text,
         meta=meta,
-        removed_lines=removed_lines,
+        removed_lines=removed_lines or [],
     )
 
 

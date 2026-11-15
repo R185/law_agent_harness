@@ -12,7 +12,7 @@ from rag.loader import find_file, load_questions, load_raw_documents
 from rag.metadata import build_doc_graph, build_document_metadata
 from rag.query import analyze_query
 from rag.retrieve import EntityResolver, retrieve_candidates
-from rag.sanitize import sanitize_text
+from rag.text import normalize_whitespace
 from rag.schema import (
     Ambiguity,
     DocumentMatch,
@@ -54,8 +54,8 @@ def evaluate_retrieval(
     raw_docs = load_raw_documents(kb_path)
     docs = []
     for rd in raw_docs:
-        clean_text, removed = sanitize_text(rd.text, rd.path)
-        doc = build_document_metadata(rd.path, clean_text, removed)
+        clean_text = normalize_whitespace(rd.text)
+        doc = build_document_metadata(rd.path, clean_text)
         docs.append(doc)
 
     graph = build_doc_graph(docs)

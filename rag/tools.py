@@ -113,11 +113,11 @@ def resolve_reference(raw: str, docs: Sequence[Document] | None = None) -> dict:
     """Resolve a raw reference string like 'п. 3.2 договора № П-17/2024' or 'ст. 70 ТК РФ'."""
     from rag.loader import load_raw_documents
     from rag.metadata import build_document_metadata
-    from rag.sanitize import sanitize_text
+    from rag.text import normalize_whitespace
 
     if docs is None:
         raw_docs = load_raw_documents()
-        docs = [build_document_metadata(rd.path, *sanitize_text(rd.text, rd.path)) for rd in raw_docs]
+        docs = [build_document_metadata(rd.path, normalize_whitespace(rd.text)) for rd in raw_docs]
 
     clean_raw = raw.strip()
     norm_raw = norm_str(clean_raw)
@@ -173,11 +173,11 @@ def verify_citations(
     """Verify legal citations in the answer text against the KB documents and context."""
     from rag.loader import load_raw_documents
     from rag.metadata import build_document_metadata
-    from rag.sanitize import sanitize_text
+    from rag.text import normalize_whitespace
 
     if docs is None:
         raw_docs = load_raw_documents()
-        docs = [build_document_metadata(rd.path, *sanitize_text(rd.text, rd.path)) for rd in raw_docs]
+        docs = [build_document_metadata(rd.path, normalize_whitespace(rd.text)) for rd in raw_docs]
 
     known_doc_nums = set()
     known_laws = set()
@@ -262,11 +262,11 @@ def get_document(doc_id: str, docs: Sequence[Document] | None = None) -> Documen
     """Retrieve DocumentMatch by doc_id."""
     from rag.loader import load_raw_documents
     from rag.metadata import build_document_metadata
-    from rag.sanitize import sanitize_text
+    from rag.text import normalize_whitespace
 
     if docs is None:
         raw_docs = load_raw_documents()
-        docs = [build_document_metadata(rd.path, *sanitize_text(rd.text, rd.path)) for rd in raw_docs]
+        docs = [build_document_metadata(rd.path, normalize_whitespace(rd.text)) for rd in raw_docs]
 
     for d in docs:
         if d.doc_id == doc_id or d.doc_id.startswith(doc_id):
@@ -298,11 +298,11 @@ def get_clause(doc_id: str, clause: str, docs: Sequence[Document] | None = None)
     """Retrieve specific clause Evidence by doc_id and clause number."""
     from rag.loader import load_raw_documents
     from rag.metadata import build_document_metadata
-    from rag.sanitize import sanitize_text
+    from rag.text import normalize_whitespace
 
     if docs is None:
         raw_docs = load_raw_documents()
-        docs = [build_document_metadata(rd.path, *sanitize_text(rd.text, rd.path)) for rd in raw_docs]
+        docs = [build_document_metadata(rd.path, normalize_whitespace(rd.text)) for rd in raw_docs]
 
     clean_cl = clause.strip().rstrip(".")
 

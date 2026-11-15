@@ -1,6 +1,5 @@
 """RAG subsystem for Meridian Law Assistant."""
 
-from rag.answer import generate_answer
 from rag.api import ApiClient
 from rag.bm25 import BM25Index
 from rag.chunker import Chunk, chunk_document
@@ -19,7 +18,7 @@ from rag.pipeline import (
 )
 from rag.query import ParsedDialog, QueryAnalysis, analyze_query, parse_dialog
 from rag.retrieve import EntityResolver, retrieve_candidates
-from rag.sanitize import sanitize_text
+from rag.text import normalize_whitespace
 from rag.schema import (
     Ambiguity,
     AmbiguityCandidate,
@@ -29,6 +28,7 @@ from rag.schema import (
     Evidence,
     ReferenceError,
     RetrievalResult,
+    RetrievedChunk,
     Signals,
     Unresolved,
 )
@@ -43,6 +43,7 @@ __all__ = [
     "get_clause",
     "RAGPipeline",
     "RetrievalResult",
+    "RetrievedChunk",
     "DocumentMatch",
     "Evidence",
     "Signals",
@@ -67,12 +68,11 @@ __all__ = [
     "build_doc_graph",
     "build_document_metadata",
     "chunk_document",
-    "generate_answer",
     "find_file",
     "load_questions",
     "load_raw_documents",
+    "normalize_whitespace",
     "parse_dialog",
     "resolve_applicable_edition",
     "retrieve_candidates",
-    "sanitize_text",
 ]

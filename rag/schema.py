@@ -124,6 +124,14 @@ class CitationCheck:
 
 
 @dataclass
+class RetrievedChunk:
+    doc_id: str
+    title: str = ""
+    excerpt: str = ""
+    score: float = 0.0
+
+
+@dataclass
 class ContextResult:
     text: str
     sources: list[str] = field(default_factory=list)
@@ -171,6 +179,19 @@ class RetrievalResult:
     @property
     def target_docs(self) -> list[str]:
         return [d.title for d in self.documents]
+
+    @property
+    def chunks(self) -> list[RetrievedChunk]:
+        """Convert evidence to list of RetrievedChunk compatible with judge/harness."""
+        return [
+            RetrievedChunk(
+                doc_id=ev.doc_id,
+                title=ev.title,
+                excerpt=ev.text,
+                score=ev.relevance,
+            )
+            for ev in self.evidence
+        ]
 
     @property
     def ranked_chunks(self) -> list[tuple[Any, float]]:
