@@ -1,0 +1,137 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://law-agent-harness.local/decision/classifier.schema.json",
+  "title": "DecisionClassifierResult",
+  "description": "Форма, которую заполняет классификатор. Полей текста для юриста в схеме нет. Эталонная метка в схему не входит.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["kind"],
+  "properties": {
+    "kind": {
+      "type": "string",
+      "enum": ["coverage", "fact_check"]
+    },
+    "suggested_decision": {
+      "type": "string",
+      "enum": [
+        "allow_answer",
+        "reject_insufficient_kb",
+        "reject_partial_coverage",
+        "clarify"
+      ]
+    },
+    "reason_codes": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "enum": [
+          "topic_mismatch",
+          "insufficient_relevance",
+          "low_confidence",
+          "sufficiency_scale_unavailable",
+          "ambiguous_entity",
+          "missing_identifier",
+          "named_not_found",
+          "partial_clause_coverage",
+          "premise_error",
+          "ambiguous_edition",
+          "date_conflict",
+          "edition_missing",
+          "missing_facts",
+          "reference_error"
+        ]
+      }
+    },
+    "missing_fields": {
+      "type": "array",
+      "maxItems": 3,
+      "uniqueItems": true,
+      "items": {
+        "type": "string",
+        "enum": ["contract", "counterparty", "period"]
+      }
+    },
+    "candidate_doc_ids": {
+      "type": "array",
+      "items": {"type": "string"}
+    },
+    "premise_errors": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["statement", "actual"],
+        "properties": {
+          "statement": {"type": "string"},
+          "evidence_quote": {"type": "string"},
+          "expected": {"type": "string"},
+          "actual": {"type": "string"}
+        }
+      }
+    },
+    "suggested_action": {
+      "type": "string",
+      "enum": ["accept", "rewrite", "refuse"]
+    },
+    "findings": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["code", "severity", "claim_id", "fixable"],
+        "properties": {
+          "code": {
+            "type": "string",
+            "enum": [
+              "fabricated_citation",
+              "citation_not_in_context",
+              "citation_check_missing",
+              "wrong_number",
+              "wrong_date",
+              "wrong_period",
+              "wrong_document",
+              "wrong_clause",
+              "wrong_party",
+              "wrong_edition",
+              "repealed_doc",
+              "contradicts_evidence",
+              "unsupported_claim",
+              "missing_citation",
+              "unverifiable"
+            ]
+          },
+          "severity": {
+            "type": "string",
+            "enum": ["low", "medium", "high"]
+          },
+          "claim_id": {"type": "string"},
+          "quote": {"type": "string"},
+          "evidence_ids": {
+            "type": "array",
+            "items": {"type": "string"}
+          },
+          "expected": {"type": "string"},
+          "actual": {"type": "string"},
+          "fixable": {"type": "boolean"},
+          "hint": {"type": "string"}
+        }
+      }
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": {"kind": {"const": "coverage"}},
+        "required": ["kind"]
+      },
+      "then": {"required": ["suggested_decision", "reason_codes"]}
+    },
+    {
+      "if": {
+        "properties": {"kind": {"const": "fact_check"}},
+        "required": ["kind"]
+      },
+      "then": {"required": ["suggested_action", "findings"]}
+    }
+  ]
+}
