@@ -41,12 +41,43 @@ from rag.tools import (
 class RAGPipeline:
     """Unified knowledge-only RAG subsystem conforming to the project contract."""
 
-    def __init__(self, source_path: Path | None = None, index_dir: Path | None = None):
+    def __init__(
+        self,
+        source_path: Path | None = None,
+        index_dir: Path | None = None,
+        preprocessor: Any = None,
+    ):
+        # Auto-detect guard sanitizer if available and not explicitly disabled
+        if preprocessor is None:
+            try:
+                from guard import Guard
+                preprocessor = Guard().sanitize_document
+            except ImportError:
+                preprocessor = None
+        elif preprocessor is False:
+            preprocessor = None
+
         raw_docs = load_raw_documents(source_path)
         self.docs: list[Document] = []
         for rd in raw_docs:
-            clean_text = normalize_whitespace(rd.text)
-            doc = build_document_metadata(rd.path, clean_text)
+            text = rd.text
+            removed: list[str] = []
+            doc_path = rd.path
+
+            if preprocessor is not None:
+                res = preprocessor(text, doc_path)
+                if hasattr(res, "text"):
+                    text = res.text
+                    removed = list(getattr(res, "removed", []))
+                    doc_path = getattr(res, "name", "") or doc_path
+                elif isinstance(res, tuple):
+                    text = res[0]
+                    removed = list(res[1]) if len(res) > 1 else []
+                elif isinstance(res, str):
+                    text = res
+
+            clean_text = normalize_whitespace(text)
+            doc = build_document_metadata(doc_path, clean_text, removed_lines=removed)
             self.docs.append(doc)
 
         self.graph: DocGraph = build_doc_graph(self.docs)
@@ -142,10 +173,17 @@ class RAGPipeline:
 _default_pipeline: RAGPipeline | None = None
 
 
-def get_pipeline() -> RAGPipeline:
+def get_pipeline(
+    source_path: Path | None = None,
+    index_dir: Path | None = None,
+    preprocessor: Any = None,
+    reset: bool = False,
+) -> RAGPipeline:
     global _default_pipeline
-    if _default_pipeline is None:
-        _default_pipeline = RAGPipeline()
+    if _default_pipeline is None or reset or (preprocessor is not None and preprocessor is not False):
+        _default_pipeline = RAGPipeline(
+            source_path=source_path, index_dir=index_dir, preprocessor=preprocessor
+        )
     return _default_pipeline
 
 

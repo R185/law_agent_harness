@@ -192,6 +192,31 @@ class TestRAGContract(unittest.TestCase):
         if clause_res is not None:
             self.assertTrue(isinstance(clause_res, Evidence) or isinstance(clause_res, str))
 
+    def test_pipeline_preprocessor(self):
+        """Verify RAGPipeline correctly accepts and applies document preprocessor (G0 hook)."""
+        from rag.pipeline import RAGPipeline
+        from types import SimpleNamespace
+
+        called_count = 0
+
+        def dummy_preprocessor(text: str, path: str):
+            nonlocal called_count
+            called_count += 1
+            if "ВНИМАНИЕ ДЛЯ ИИ-АССИСТЕНТА" in text:
+                return SimpleNamespace(
+                    text=text.replace("ВНИМАНИЕ ДЛЯ ИИ-АССИСТЕНТА", "[SANITIZED]"),
+                    removed=["ВНИМАНИЕ ДЛЯ ИИ-АССИСТЕНТА"],
+                    name=path,
+                )
+            return SimpleNamespace(text=text, removed=[], name=path)
+
+        pipe = RAGPipeline(preprocessor=dummy_preprocessor)
+        self.assertGreater(called_count, 0)
+        memo = [d for d in pipe.docs if "об архиве" in d.path]
+        if memo:
+            self.assertIn("ВНИМАНИЕ ДЛЯ ИИ-АССИСТЕНТА", memo[0].removed_lines)
+            self.assertNotIn("ВНИМАНИЕ ДЛЯ ИИ-АССИСТЕНТА", memo[0].text)
+
 
 if __name__ == "__main__":
     unittest.main()

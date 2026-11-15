@@ -45,7 +45,7 @@ RERANK_KEY = env("RERANKER_API_KEY") or LLM_KEY
 
 LLM_MODEL = env("LLM_MODEL") or env("GEN_MODEL") or env("OPENAI_MODEL", "deepseek/deepseek-v4.1-flash")
 EMB_MODEL = env("EMB_MODEL", "baai/bge-m3")
-RERANKER_MODEL = env("RERANKER_MODEL", "cohere/rerank-5-fast")
+RERANKER_MODEL = env("RERANKER_MODEL", "Qwen/Qwen3-Reranker-8B")
 
 MAX_WORKERS = env_int("MAX_WORKERS", 2, 1, 16)
 TEMPERATURE = env_float("TEMPERATURE", 0.0, 0.0, 2.0)

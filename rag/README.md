@@ -72,6 +72,21 @@ if not check.valid:
     print("Несуществующие документы:", check.unknown_docs)
 ```
 
+### Интеграция с препроцессором / санитизатором (G0 для оркестратора)
+
+Для обезвреживания атак, внедрённых в документы базы знаний (контрольная точка G0), `RAGPipeline` поддерживает параметр `preprocessor`:
+
+```python
+from guard import Guard
+from rag import RAGPipeline
+
+guard = Guard()
+# Оркестратор передаёт метод санитизации в RAG при инициализации:
+pipeline = RAGPipeline(preprocessor=guard.sanitize_document)
+```
+
+*Примечание:* `RAGPipeline` автоматически обнаруживает модуль `guard` (если ветка `guard` смержена в проект) и подключает `Guard().sanitize_document` по умолчанию. Явный `preprocessor=...` позволяет оркестратору переопределить логику или отключить её (`preprocessor=False`).
+
 ---
 
 ## 3. Архитектура интеграции в общий пайплайн
