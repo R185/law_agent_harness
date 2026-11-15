@@ -1,0 +1,225 @@
+from __future__ import annotations
+
+# Стандартная библиотека (Standard library)
+from pathlib import Path
+from typing import Sequence
+
+# Конфигурация и API-клиент (Configuration & API client)
+from rag import config
+from rag.api import ApiClient
+
+# Метаданные и загрузка базы знаний (KB loaders, metadata & text processing)
+from rag.loader import load_raw_documents
+from rag.metadata import DocGraph, Document, build_doc_graph, build_document_metadata
+from rag.text import normalize_whitespace
+
+# Поисковый индекс и аналитика запросов (Indexing & Query analysis)
+from rag.context import build_context_cards
+from rag.index import KBIndex
+from rag.query import ParsedDialog, QueryAnalysis, analyze_query, parse_dialog
+from rag.retrieve import EntityResolver, retrieve_candidates
+
+# Схемы данных контракта (Data contracts & schemas)
+from rag.schema import (
+    CitationCheck,
+    ContextResult,
+    DocumentMatch,
+    Evidence,
+    RetrievalResult,
+)
+
+# Инструменты контракта RAG (Contract tools implementation)
+from rag.tools import (
+    build_context as tool_build_context,
+    get_clause as tool_get_clause,
+    get_document as tool_get_document,
+    resolve_reference as tool_resolve_reference,
+    verify_citations as tool_verify_citations,
+)
+
+
+class RAGPipeline:
+    """Unified knowledge-only RAG subsystem conforming to the project contract."""
+
+    def __init__(
+        self,
+        source_path: Path | None = None,
+        index_dir: Path | None = None,
+        preprocessor: Any = None,
+    ):
+        # Auto-detect guard sanitizer if available and not explicitly disabled
+        if preprocessor is None:
+            try:
+                from guard import Guard
+                preprocessor = Guard().sanitize_document
+            except ImportError:
+                preprocessor = None
+        elif preprocessor is False:
+            preprocessor = None
+
+        raw_docs = load_raw_documents(source_path)
+        self.docs: list[Document] = []
+        for rd in raw_docs:
+            text = rd.text
+            removed: list[str] = []
+            doc_path = rd.path
+
+            if preprocessor is not None:
+                res = preprocessor(text, doc_path)
+                if hasattr(res, "text"):
+                    text = res.text
+                    removed = list(getattr(res, "removed", []))
+                    doc_path = getattr(res, "name", "") or doc_path
+                elif isinstance(res, tuple):
+                    text = res[0]
+                    removed = list(res[1]) if len(res) > 1 else []
+                elif isinstance(res, str):
+                    text = res
+
+            clean_text = normalize_whitespace(text)
+            doc = build_document_metadata(doc_path, clean_text, removed_lines=removed)
+            self.docs.append(doc)
+
+        self.graph: DocGraph = build_doc_graph(self.docs)
+        self.resolver: EntityResolver = EntityResolver(self.docs, self.graph)
+
+        self.index: KBIndex = KBIndex()
+        self.index.build_chunks_and_bm25(self.docs)
+
+        idx_dir = index_dir or (Path(__file__).resolve().parent.parent / "index")
+        if idx_dir.is_dir():
+            self.index.load_precomputed_embeddings(idx_dir)
+
+    def retrieve(
+        self,
+        question: str,
+        history: str | None = None,
+        top_k: int = 10,
+        client: ApiClient | None = None,
+    ) -> RetrievalResult:
+        """Core RAG retrieval function.
+
+        Takes question and optional history, runs BM25 + dense + graph + rerank,
+        and returns structured RetrievalResult (documents, evidence, signals, unresolved, ambiguity).
+        When client is None, operates deterministically on BM25 and graph without network.
+        """
+        # Compose dialog representation
+        if history:
+            full_input = f"{history.strip()}\nПользователь: {question.strip()}"
+        else:
+            full_input = question.strip()
+
+        # Extract entities using KB known parties to avoid hardcoding
+        known_parties = self.resolver.get_known_parties()
+        dialog, analysis = analyze_query(
+            full_input, client=client, known_parties=known_parties
+        )
+
+        dense_fn = (
+            (lambda q, k: self.index.dense_search(q, client, top_k=k))
+            if self.index.embeddings is not None and config.EMBED_KEY
+            else None
+        )
+
+        result: RetrievalResult = retrieve_candidates(
+            analysis=analysis,
+            chunks=self.index.chunks,
+            docs=self.docs,
+            graph=self.graph,
+            bm25=self.index.bm25,
+            resolver=self.resolver,
+            dense_scores_fn=dense_fn,
+            client=client,
+            top_k=top_k,
+        )
+
+        # Precompute context string for quick access via result.context
+        context_res = tool_build_context(result, max_chars=config.CONTEXT_MAX_CHARS)
+        result._context_cache = context_res.text
+
+        return result
+
+    def build_context(
+        self,
+        result: RetrievalResult,
+        max_chars: int = 12000,
+        token_budget: int | None = None,
+        max_tokens: int | None = None,
+        **kwargs,
+    ) -> ContextResult:
+        """Format retrieval result into text cards, sources, evidence and warnings."""
+        return tool_build_context(
+            result, max_chars=max_chars, token_budget=token_budget, max_tokens=max_tokens
+        )
+
+    def resolve_reference(self, raw: str) -> Any:
+        """Resolve a raw reference string like 'п. 3.2 договора № П-17/2024' or 'ст. 70 ТК РФ'."""
+        return tool_resolve_reference(raw, docs=self.docs)
+
+    def verify_citations(self, answer_text: str, context: str | None = None) -> CitationCheck:
+        """Verify legal citations in the answer against indexed KB and context."""
+        return tool_verify_citations(answer_text, context=context, docs=self.docs)
+
+    def get_document(self, doc_id: str) -> DocumentMatch | None:
+        """Retrieve DocumentMatch by doc_id."""
+        return tool_get_document(doc_id, docs=self.docs)
+
+    def get_clause(self, doc_id: str, clause: str) -> Evidence | None:
+        """Retrieve specific clause Evidence by doc_id and clause number."""
+        return tool_get_clause(doc_id, clause, docs=self.docs)
+
+
+# Global default instance for top-level retrieve() calls
+_default_pipeline: RAGPipeline | None = None
+
+
+def get_pipeline(
+    source_path: Path | None = None,
+    index_dir: Path | None = None,
+    preprocessor: Any = None,
+    reset: bool = False,
+) -> RAGPipeline:
+    global _default_pipeline
+    if _default_pipeline is None or reset or (preprocessor is not None and preprocessor is not False):
+        _default_pipeline = RAGPipeline(
+            source_path=source_path, index_dir=index_dir, preprocessor=preprocessor
+        )
+    return _default_pipeline
+
+
+def retrieve(
+    question: str,
+    history: str | None = None,
+    top_k: int = 10,
+    client: ApiClient | None = None,
+) -> RetrievalResult:
+    """Module-level retrieve entry point matching the exact PR #1 contract."""
+    return get_pipeline().retrieve(question, history=history, top_k=top_k, client=client)
+
+
+def build_context(
+    result: RetrievalResult,
+    max_chars: int = 12000,
+    token_budget: int | None = None,
+    max_tokens: int | None = None,
+    **kwargs,
+) -> ContextResult:
+    return tool_build_context(
+        result, max_chars=max_chars, token_budget=token_budget, max_tokens=max_tokens
+    )
+
+
+def resolve_reference(raw: str) -> Any:
+    return get_pipeline().resolve_reference(raw)
+
+
+def verify_citations(answer_text: str, context: str | None = None) -> CitationCheck:
+    return get_pipeline().verify_citations(answer_text, context=context)
+
+
+def get_document(doc_id: str) -> DocumentMatch | None:
+    return get_pipeline().get_document(doc_id)
+
+
+def get_clause(doc_id: str, clause: str) -> Evidence | None:
+    return get_pipeline().get_clause(doc_id, clause)
