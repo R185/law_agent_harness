@@ -1,15 +1,20 @@
 from __future__ import annotations
 
+# Стандартная библиотека (Standard library)
 import hashlib
 import json
 import sys
 from pathlib import Path
 from typing import Sequence
 
+# Сторонние библиотеки (Third-party)
 import numpy as np
 
+# Конфигурация и API (Configuration & API client)
 from rag import config
 from rag.api import ApiClient
+
+# Компоненты индекса и метаданные (Index components, chunking & documents)
 from rag.bm25 import BM25Index
 from rag.chunker import Chunk, chunk_document
 from rag.metadata import Document

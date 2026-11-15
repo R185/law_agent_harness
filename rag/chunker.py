@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+# Стандартная библиотека (Standard library)
 import re
 from dataclasses import dataclass, field
 
+# Конфигурация и метаданные (Configuration & Metadata)
 from rag import config
 from rag.metadata import Document
 

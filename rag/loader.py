@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+# Стандартная библиотека (Standard library)
 import csv
 import io
 import os
@@ -9,6 +10,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from xml.etree import ElementTree as ET
 
+# Конфигурация (Configuration)
 from rag import config
 
 

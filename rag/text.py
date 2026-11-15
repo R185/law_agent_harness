@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+# Стандартная библиотека (Standard library)
 import re
 from typing import Callable
 

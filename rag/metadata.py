@@ -1,11 +1,13 @@
 from __future__ import annotations
 
+# Стандартная библиотека (Standard library)
 import hashlib
 import re
 from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta
 from typing import Any
 
+# Конфигурация и утилиты текста (Configuration & Text normalization)
 from rag import config
 from rag.text import canonical_doc_num, extract_doc_numbers, norm_str
 

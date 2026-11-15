@@ -1,11 +1,16 @@
 from __future__ import annotations
 
+# Стандартная библиотека (Standard library)
 import re
 from typing import Sequence
 
+# Конфигурация и компоненты RAG (Configuration & Components)
 from rag import config
 from rag.chunker import chunk_document
 from rag.metadata import Document, resolve_applicable_edition
+from rag.text import extract_doc_numbers, norm_str
+
+# Схемы контракта RAG (Data contracts & schemas)
 from rag.schema import (
     CitationCheck,
     ContextResult,
@@ -14,7 +19,6 @@ from rag.schema import (
     Resolution,
     RetrievalResult,
 )
-from rag.text import extract_doc_numbers, norm_str
 
 
 def build_context(

@@ -1,12 +1,15 @@
 from __future__ import annotations
 
+# Стандартная библиотека (Standard library)
 import math
 import sys
 import time
 from typing import Any
 
+# Сторонние библиотеки (Third-party)
 import httpx
 
+# Конфигурация (Configuration)
 from rag import config
 
 

@@ -1,14 +1,18 @@
 from __future__ import annotations
 
+# Стандартная библиотека (Standard library)
 import json
 import re
 import sys
 from dataclasses import dataclass, field
 from typing import Any, Sequence
 
+# Конфигурация и API-клиент (Configuration & API client)
 from rag import config
 from rag.api import ApiClient
-from rag.text import extract_doc_numbers, norm_str, tokenize, _stem_fn
+
+# Обработка текста и извлечение сущностей (Text processing & normalization)
+from rag.text import _stem_fn, extract_doc_numbers, norm_str, tokenize
 
 
 @dataclass

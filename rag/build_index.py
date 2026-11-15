@@ -1,11 +1,21 @@
 from __future__ import annotations
 
+# Стандартная библиотека (Standard library)
 import argparse
 import sys
 from pathlib import Path
 
+# Поддержка прямого вызова (Allow direct script execution)
+if __name__ == "__main__" and __package__ is None:
+    ROOT = Path(__file__).resolve().parent.parent
+    if str(ROOT) not in sys.path:
+        sys.path.insert(0, str(ROOT))
+
+# Конфигурация и API-клиент (Configuration & API client)
 from rag import config
 from rag.api import ApiClient
+
+# Компоненты индексации и метаданные документов (Indexing, chunks & metadata)
 from rag.chunker import chunk_document
 from rag.index import KBIndex
 from rag.loader import load_raw_documents

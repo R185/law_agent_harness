@@ -1,11 +1,21 @@
 from __future__ import annotations
 
+# Стандартная библиотека (Standard library)
 import argparse
 import csv
 import sys
 from pathlib import Path
 
+# Поддержка прямого вызова (Allow direct script execution)
+if __name__ == "__main__" and __package__ is None:
+    ROOT = Path(__file__).resolve().parent.parent
+    if str(ROOT) not in sys.path:
+        sys.path.insert(0, str(ROOT))
+
+# Конфигурация (Configuration)
 from rag import config
+
+# Индексация, загрузка и анализ запросов (Index, loaders & query analysis)
 from rag.bm25 import BM25Index
 from rag.chunker import chunk_document
 from rag.loader import find_file, load_questions, load_raw_documents
@@ -13,6 +23,8 @@ from rag.metadata import build_doc_graph, build_document_metadata
 from rag.query import analyze_query
 from rag.retrieve import EntityResolver, retrieve_candidates
 from rag.text import normalize_whitespace
+
+# Схемы контракта RAG и инструменты (Contract schemas & tools)
 from rag.schema import (
     Ambiguity,
     DocumentMatch,

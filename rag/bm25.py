@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+# Стандартная библиотека (Standard library)
 import math
 from collections import Counter
 from typing import Sequence
 
+# Компоненты RAG (RAG chunking & tokenization)
 from rag.chunker import Chunk
 from rag.text import tokenize
 

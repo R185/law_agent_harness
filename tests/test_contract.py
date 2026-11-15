@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+# Стандартная библиотека (Standard library)
 import unittest
 from pathlib import Path
 
+# Точки входа и инструменты контракта RAG (RAG Entrypoints & Tools)
 from rag.pipeline import (
     build_context,
     get_clause,
@@ -11,6 +13,8 @@ from rag.pipeline import (
     retrieve,
     verify_citations,
 )
+
+# Схемы контракта RAG (Contract Schemas)
 from rag.schema import (
     Ambiguity,
     ContextResult,

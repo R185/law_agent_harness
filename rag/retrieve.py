@@ -1,16 +1,24 @@
 from __future__ import annotations
 
+# Стандартная библиотека (Standard library)
 import math
 import re
 import sys
 from typing import Any, Sequence
 
+# Конфигурация и API-клиент (Configuration & API)
 from rag import config
 from rag.api import ApiClient
+
+# Индексация и метаданные документов (Index, chunks & metadata)
 from rag.bm25 import BM25Index
 from rag.chunker import Chunk
 from rag.metadata import DocGraph, Document, resolve_applicable_edition
+
+# Анализ запроса (Query analysis)
 from rag.query import ParsedDialog, QueryAnalysis, analyze_query
+
+# Схемы данных контракта (Data contracts & schemas)
 from rag.schema import (
     Ambiguity,
     AmbiguityCandidate,
@@ -21,6 +29,8 @@ from rag.schema import (
     Signals,
     Unresolved,
 )
+
+# Утилиты обработки и стемминга текста (Text utilities & distance metrics)
 from rag.text import _stem_fn, levenshtein_distance, norm_str, tokenize
 
 

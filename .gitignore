@@ -2,5 +2,6 @@ __pycache__/
 *.pyc
 submission.csv
 eval_out/
+index/
 .env*
 *.pdf

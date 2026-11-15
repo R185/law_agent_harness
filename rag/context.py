@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+# Стандартная библиотека (Standard library)
 import re
 from typing import Sequence
 
+# Конфигурация и компоненты RAG (Configuration & Components)
 from rag import config
 from rag.chunker import Chunk
 from rag.metadata import DocGraph, Document

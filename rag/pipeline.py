@@ -1,17 +1,25 @@
 from __future__ import annotations
 
+# Стандартная библиотека (Standard library)
 from pathlib import Path
 from typing import Sequence
 
+# Конфигурация и API-клиент (Configuration & API client)
 from rag import config
 from rag.api import ApiClient
-from rag.context import build_context_cards
-from rag.index import KBIndex
+
+# Метаданные и загрузка базы знаний (KB loaders, metadata & text processing)
 from rag.loader import load_raw_documents
 from rag.metadata import DocGraph, Document, build_doc_graph, build_document_metadata
+from rag.text import normalize_whitespace
+
+# Поисковый индекс и аналитика запросов (Indexing & Query analysis)
+from rag.context import build_context_cards
+from rag.index import KBIndex
 from rag.query import ParsedDialog, QueryAnalysis, analyze_query, parse_dialog
 from rag.retrieve import EntityResolver, retrieve_candidates
-from rag.text import normalize_whitespace
+
+# Схемы данных контракта (Data contracts & schemas)
 from rag.schema import (
     CitationCheck,
     ContextResult,
@@ -19,6 +27,8 @@ from rag.schema import (
     Evidence,
     RetrievalResult,
 )
+
+# Инструменты контракта RAG (Contract tools implementation)
 from rag.tools import (
     build_context as tool_build_context,
     get_clause as tool_get_clause,
