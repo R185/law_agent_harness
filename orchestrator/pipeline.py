@@ -33,26 +33,6 @@ REWRITE_NOTE = (
     "Не добавляй новых фактов и сведений, о которых не спрашивали."
 )
 NO_CONTEXT = "Фрагменты по вопросу в базе знаний не найдены."
-EXTRA_HEADER = "Дополнительные фрагменты тех же статей (соседние пункты и начало статьи):"
-EXTRA_BUDGET = 4000
-
-# Расшифровка сокращений только для поиска: в тексте законов пишут «налог на добавленную
-# стоимость», «налоговой ставке», а не «НДС». Генерация получает исходный вопрос.
-_EXPAND = [
-    (r"освобожд", "освобождение от исполнения обязанностей налогоплательщика сумма выручки доходов не превысила", None, ""),
-    (r"^(?!.*освобожд).*\bНДС\b", "налог на добавленную стоимость", r"ставк|процент", "налогообложение производится по налоговой ставке процента"),
-    (r"\bНДФЛ\b", "налог на доходы физических лиц", r"ставк|процент|сколько|какой", "налоговая ставка сумма налоговых баз"),
-    (r"налог\w*\s+на\s+прибыль", "налог на прибыль организаций", r"ставк|процент|бюджет", "налоговая ставка устанавливается в размере процентов"),
-    (r"Роскомнадзор", "уполномоченного органа по защите прав субъектов персональных данных", None, ""),
-    (r"утечк", "неправомерную передачу предоставление распространение доступ информации включающей персональные данные", None, ""),
-    (r"штраф", "административного штрафа", None, ""),
-    (r"\bМРОТ\b", "минимальный размер оплаты труда", None, ""),
-]
-
-# Проверка чисел: каждое значение из ответа должно встречаться во фрагментах (или в вопросе).
-_NUM_RE = re.compile(r"\d{1,3}(?:[ \u00a0]\d{3})+(?:[.,]\d+)?|\d+(?:[.,]\d+)?")
-_REF_BEFORE = re.compile(
-    r"(?:\bп|\bпп|\bст|\bч|\bподп|\bабз|\bгл|№|\bN|стать\w*|пункт\w*|част\w*|подпункт\w*|глав\w*)\.?\s*$", re.I)
 
 _REJECT_REASONS = {
     "topic_mismatch": "тема вопроса не найдена в базе",
@@ -75,40 +55,6 @@ def _one_line(text: str) -> str:
     return " ".join((text or "").split()).strip()
 
 
-def _search_query(question: str) -> str:
-    extra = []
-    for pat, base, cond, more in _EXPAND:
-        if re.search(pat, question, re.I | re.S):
-            extra.append(base)
-            if cond and re.search(cond, question, re.I):
-                extra.append(more)
-    return question + ("\n" + " ".join(extra) if extra else "")
-
-
-def _numbers(text: str, skip_refs: bool) -> set:
-    out = set()
-    for m in _NUM_RE.finditer(text or ""):
-        if skip_refs:
-            before = text[max(0, m.start() - 12):m.start()]
-            if _REF_BEFORE.search(before):
-                continue  # номер пункта, статьи, части, документа
-            if (m.start() > 0 and text[m.start() - 1] in "-/.") or text[m.end():m.end() + 1] in ("-", "/", "."):
-                continue  # часть номера документа или даты: П-17/2024, 01.03.2025, 121-го
-        out.add(m.group(0).replace(" ", "").replace("\u00a0", "").replace(",", "."))
-    return out
-
-
-def _ungrounded_numbers(answer: str, context: str, question: str) -> list:
-    known = _numbers(context, False) | _numbers(question, False)
-    missing = []
-    for tok in _numbers(answer, True):
-        digits = tok.replace(".", "")
-        if len(digits) < 2 or tok in known or re.fullmatch(r"(19|20)\d\d", tok):
-            continue
-        missing.append(tok)
-    return sorted(set(missing))[:5]
-
-
 def _short(text: object, limit: int = 120) -> str:
     flat = _one_line(str(text or ""))
     return flat if len(flat) <= limit else flat[: limit - 1] + "…"
@@ -126,12 +72,6 @@ class Orchestrator:
         self.guard = Guard(llm=guard_llm, llm_mode=config.GUARD_LLM_MODE)
         self.rag = RAGPipeline(source_path=source_path, preprocessor=self.guard.sanitize_document)  # G0
         self._judge_enabled = config.ENABLE_JUDGE
-        self._chunks_by_doc: dict = {}
-        for chunk in self.rag.index.chunks:
-            self._chunks_by_doc.setdefault(chunk.doc_id, []).append(chunk)
-        for chunks in self._chunks_by_doc.values():
-            chunks.sort(key=lambda c: c.seq)
-        self._law_docs = {d.doc_id for d in self.rag.docs if getattr(d, "category", "") == "law"}
         if config.ENABLE_DENSE and not self.offline and self.client is not None:
             self._build_dense_index()
 
@@ -170,23 +110,15 @@ class Orchestrator:
         self.close()
 
     # ------------------------------------------------------------ шаги
-    def _retrieve(self, question: str, history: str | None = None, search_extra: str | None = None) -> RetrievalResult:
+    def _retrieve(self, question: str, history: str | None = None) -> RetrievalResult:
         client = self.client if self._time_left() > 0 else None
         try:
-            return self.rag.retrieve(
-                question,
-                history=history,
-                top_k=config.TOP_K,
-                client=client,
-                search_extra=search_extra,
-            )
+            return self.rag.retrieve(question, history=history, top_k=config.TOP_K, client=client)
         except Exception as exc:
             if client is None:
                 raise
             print(f"[orchestrator] retrieval с API не удался ({type(exc).__name__}); повтор без API", flush=True)
-            return self.rag.retrieve(
-                question, history=history, top_k=config.TOP_K, client=None, search_extra=search_extra
-            )
+            return self.rag.retrieve(question, history=history, top_k=config.TOP_K, client=None)
 
     def _context(self, result: RetrievalResult) -> ContextResult:
         return self.rag.build_context(result, max_chars=config.CONTEXT_MAX_CHARS)
@@ -197,38 +129,6 @@ class Orchestrator:
         if scanned.removed:
             print(f"{tag} guard G2: вырезано {len(scanned.removed)} фрагментов", flush=True)
         return scanned.text.strip()
-
-    def _extra_context(self, result: RetrievalResult) -> str:
-        """Большие статьи режутся на сотни фрагментов: норма и её санкция или ставка могут оказаться
-        в соседних фрагментах. Добавляем соседей найденных фрагментов законов и начало статьи."""
-        have = {ev.text for ev in result.evidence}
-        picked: list[str] = []
-        for ev in result.evidence:
-            if ev.doc_id not in self._law_docs:
-                continue
-            chunks = self._chunks_by_doc.get(ev.doc_id, [])
-            idx = next((i for i, c in enumerate(chunks) if c.text == ev.text), None)
-            if idx is None:
-                continue
-            for j in (idx - 1, idx + 1):
-                if 0 <= j < len(chunks) and chunks[j].text not in have:
-                    have.add(chunks[j].text)
-                    picked.append(chunks[j].text)
-        for doc in result.documents[:3]:
-            if doc.doc_id in self._law_docs:
-                for chunk in self._chunks_by_doc.get(doc.doc_id, [])[:2]:
-                    if chunk.text not in have:
-                        have.add(chunk.text)
-                        picked.append(chunk.text)
-        out, total = [], 0
-        for text in picked:
-            if total + len(text) > EXTRA_BUDGET:
-                break
-            out.append(text)
-            total += len(text)
-        if not out:
-            return ""
-        return self.guard.scan_context("\n\n".join(out)).text.strip()  # G2 и для добавленных фрагментов
 
     def _judge_notes(self, question: str, result: RetrievalResult, tag: str) -> list[str]:
         """Судья покрытия как подсказка генерации, а не фильтр: его вывод уходит модели указанием."""
@@ -330,13 +230,6 @@ class Orchestrator:
         issues = [h.fix + (f" (фрагмент: «{h.quote}»)" if h.quote else "") for h in check.rewrite_hints]
         for v in tone.hard_only(tone.check(answer, context)):
             issues.append(f"{v.code}: {v.hint}" + (f" (фрагмент: «{v.quote}»)" if v.quote else ""))
-        asked = (verdict.original_question + "\n" + verdict.history_text) if hasattr(verdict, "history_text") \
-            else str(verdict or "")
-        missing = _ungrounded_numbers(answer, context, asked)
-        if missing:
-            issues.append(
-                "значения " + ", ".join(missing) + " не встречаются во фрагментах: замени их значениями из "
-                "фрагментов или убери; не бери числа из своих знаний — в базе действуют редакции 2025–2026 годов")
         return check, answer, issues
 
     def _extractive(self, question: str, result: RetrievalResult, context: ContextResult) -> str:
@@ -387,15 +280,10 @@ class Orchestrator:
             clean_question = (verdict.clean_question or question).strip()
             history = verdict.history_text or None
 
-        result = self._retrieve(
-            clean_question, history=history, search_extra=_search_query(clean_question)
-        )
+        result = self._retrieve(clean_question, history=history)
         notes = self._judge_notes(clean_question, result, tag) + self._date_note(result)
         context = self._context(result)
         context_text = self._scan_context(context, tag) or NO_CONTEXT
-        extra_ctx = self._extra_context(result)
-        if extra_ctx:
-            context_text += "\n\n" + EXTRA_HEADER + "\n" + extra_ctx
 
         if self.offline or self._time_left() <= 0:
             if not self.offline:

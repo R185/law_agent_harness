@@ -490,25 +490,11 @@ def retrieve_candidates(
                     old_why + ["target_clause_forced"],
                     True,
                 )
-            # When the query names an exact article, its best chunks must
-            # survive the top_k cut, not only enter the candidate pool.  A
-            # code-only reference ("НК РФ") stays broad and is not forced.
-            exact_law = any(
-                re.search(r"\bст\.?\s*\d", str(law))
-                for law in analysis.entities.get("laws", [])
-            )
+            # Add the best chunks for the question and the opening chunk so
+            # the document title/context is not lost.  Existing candidates keep
+            # their original (usually higher) score.
             for tc in [c for _, c in ranked_target[:8]] + t_chunks[:1]:
-                if exact_law:
-                    old = candidate_chunks.get(tc.chunk_id)
-                    old_score = old[1] if old else 0.0
-                    old_why = list(old[2]) if old else []
-                    candidate_chunks[tc.chunk_id] = (
-                        tc,
-                        max(old_score, best_cand_score * 1.05),
-                        old_why + ["target_entity_forced"],
-                        True,
-                    )
-                elif tc.chunk_id not in candidate_chunks:
+                if tc.chunk_id not in candidate_chunks:
                     candidate_chunks[tc.chunk_id] = (
                         tc,
                         best_cand_score * 0.8,
