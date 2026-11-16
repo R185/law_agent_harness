@@ -244,11 +244,12 @@ def verify_citations(
         if not clause_found_anywhere and context and f"{cl}" not in context:
             unknown_clauses.append(f"п. {cl}")
 
-    # Check context support
+    # Check context support (регистр не важен: номера договоров приходят в нижнем регистре)
     if context:
+        context_cf = context.casefold()
         for cit in all_citations:
             clean_cit = cit.replace("договор ", "").replace("ст. ", "")
-            if clean_cit not in context:
+            if clean_cit.casefold() not in context_cf:
                 unsupported.append(cit)
 
     valid = (len(unknown_docs) == 0 and len(unknown_clauses) == 0)

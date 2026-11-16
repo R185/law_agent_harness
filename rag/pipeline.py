@@ -96,6 +96,7 @@ class RAGPipeline:
         history: str | None = None,
         top_k: int = 10,
         client: ApiClient | None = None,
+        search_extra: str | None = None,
     ) -> RetrievalResult:
         """Core RAG retrieval function.
 
@@ -112,8 +113,15 @@ class RAGPipeline:
         # Extract entities using KB known parties to avoid hardcoding
         known_parties = self.resolver.get_known_parties()
         dialog, analysis = analyze_query(
-            full_input, client=client, known_parties=known_parties
+            full_input,
+            client=client,
+            known_parties=known_parties,
+            known_laws=self.resolver.law_articles,
         )
+        if search_extra:
+            analysis.search_queries = list(
+                dict.fromkeys(analysis.search_queries + [search_extra])
+            )
 
         dense_fn = (
             (lambda q, k: self.index.dense_search(q, client, top_k=k))

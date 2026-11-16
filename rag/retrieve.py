@@ -44,6 +44,8 @@ class EntityResolver:
         self.num_to_doc: dict[str, str] = {}
         self.org_to_docs: dict[str, set[str]] = {}
         self.law_articles: set[str] = set()
+        self.law_to_docs: dict[str, set[str]] = {}
+        self.law_to_docs_bare: dict[str, set[str]] = {}
 
         for d in docs:
             for num in d.meta.get("doc_numbers", []):
@@ -58,8 +60,12 @@ class EntityResolver:
                 code = d.meta.get("law_code", "")
                 art = d.meta.get("article", "")
                 if code and art:
-                    self.law_articles.add(f"{code} ст. {art}".lower())
-                    self.law_articles.add(f"ст. {art}".lower())
+                    full = f"{code} ст. {art}".lower()
+                    bare = f"ст. {art}".lower()
+                    self.law_articles.add(full)
+                    self.law_articles.add(bare)
+                    self.law_to_docs.setdefault(full, set()).add(d.doc_id)
+                    self.law_to_docs_bare.setdefault(bare, set()).add(d.doc_id)
 
     def get_known_parties(self) -> list[str]:
         """Return list of all clean party names from indexed documents."""
@@ -193,7 +199,29 @@ class EntityResolver:
         # 3. Match law articles
         for law in analysis.entities.get("laws", []):
             clean_l = norm_str(law).strip()
-            if clean_l and not any(clean_l in k or k in clean_l for k in self.law_articles):
+            known = clean_l in self.law_articles
+            if not known and clean_l:
+                # A code without an article ("54-ФЗ") matches any article of
+                # that code; an article reference must match exactly.
+                known = any(k.startswith(clean_l + " ") for k in self.law_articles)
+            if known:
+                # A matched law document is a target: the retriever gives it
+                # an entity boost instead of letting a contract outrank it.
+                matched_ids = set(self.law_to_docs.get(clean_l, set()))
+                if not matched_ids and clean_l.startswith("ст. "):
+                    bare_ids = self.law_to_docs_bare.get(clean_l, set())
+                    if len(bare_ids) == 1:
+                        matched_ids = set(bare_ids)
+                if not matched_ids:
+                    for key, doc_ids in self.law_to_docs.items():
+                        if key.startswith(clean_l + " "):
+                            matched_ids.update(doc_ids)
+                if matched_ids:
+                    target_doc_ids.update(matched_ids)
+                    trace.append(
+                        f"Entity: law '{law}' matched {len(matched_ids)} document(s)"
+                    )
+            if clean_l and not known:
                 unresolved.law_articles.append(law)
                 ref_errors.append(
                     ReferenceError(
@@ -256,6 +284,10 @@ def normalize_relevance(raw_score: float, score_kind: str) -> float:
         if raw_score <= 0.0:
             return 0.0
         return float(raw_score / (raw_score + 20.0))
+    elif score_kind == "rrf":
+        if raw_score <= 0.0:
+            return 0.0
+        return min(1.0, float(raw_score * (config.RRF_K + 1)))
     else:
         if raw_score <= 0.0:
             return 0.0
@@ -322,7 +354,7 @@ def retrieve_candidates(
         if fallback_hits:
             best_raw_bm25 = max(best_raw_bm25, fallback_hits[0][1])
 
-    score_kind = "rrf" if dense_used else "bm25"
+    score_kind = "rrf"
     fused_scores = rrf_fuse(ranked_lists, rrf_k=config.RRF_K)
 
     # 2. Apply deterministic boosts and penalties
@@ -414,14 +446,69 @@ def retrieve_candidates(
                                 False,
                             )
 
-    # (c) Ensure target doc is present if identified
+    # (c) Ensure target docs are represented by relevant chunks, not merely
+    # the first chunk of a long legal act.  A target article often starts with
+    # an amendment preamble; the actual rule (for example the VAT rate) lives
+    # in a later chunk with a low BM25 score because its wording is generic.
+    clause_refs = set(
+        re.findall(r"\b(?:ч\.|часть|части|частью)\s*(\d+(?:\.\d+)?)", analysis.standalone_question, re.I)
+    )
     if target_doc_ids:
-        has_target = any(c.doc_id in target_doc_ids for c, _, _, _ in candidate_chunks.values())
-        if not has_target:
-            best_cand_score = max((s for _, s, _, _ in candidate_chunks.values()), default=0.01)
-            for t_id in target_doc_ids:
-                t_chunks = doc_to_chunks.get(t_id, [])
-                for tc in t_chunks[:3]:
+        best_cand_score = max((s for _, s, _, _ in candidate_chunks.values()), default=0.01)
+        for t_id in target_doc_ids:
+            t_chunks = doc_to_chunks.get(t_id, [])
+            ranked_target: list[tuple[float, Chunk]] = []
+            seen_target: set[str] = set()
+            for q in queries:
+                for idx, score in bm25.search(q, top_k=min(len(chunks), 200)):
+                    c = chunks[idx]
+                    if c.doc_id == t_id and c.chunk_id not in seen_target:
+                        seen_target.add(c.chunk_id)
+                        ranked_target.append((score, c))
+            ranked_target.sort(key=lambda item: item[0], reverse=True)
+            # Chunks for an explicitly named part ("ч. 2") outrank generic
+            # neighbours; otherwise the model may see part 2 but not its
+            # penalty line.  Include subclauses of the requested part too.
+            clause_chunks: list[Chunk] = []
+            for tc in t_chunks:
+                if any(
+                    cid == ref or cid.startswith(ref + ".")
+                    for cid in tc.clause_ids
+                    for ref in clause_refs
+                ):
+                    clause_chunks.append(tc)
+            # A clause chunk has to enter the top context, not merely the
+            # candidate pool: top_context is the first top_k candidates after
+            # fusion, and a low BM25 score would otherwise drop it again.
+            for tc in clause_chunks[:4]:
+                old = candidate_chunks.get(tc.chunk_id)
+                old_score = old[1] if old else 0.0
+                old_why = list(old[2]) if old else []
+                candidate_chunks[tc.chunk_id] = (
+                    tc,
+                    max(old_score, best_cand_score * 1.1),
+                    old_why + ["target_clause_forced"],
+                    True,
+                )
+            # When the query names an exact article, its best chunks must
+            # survive the top_k cut, not only enter the candidate pool.  A
+            # code-only reference ("НК РФ") stays broad and is not forced.
+            exact_law = any(
+                re.search(r"\bст\.?\s*\d", str(law))
+                for law in analysis.entities.get("laws", [])
+            )
+            for tc in [c for _, c in ranked_target[:8]] + t_chunks[:1]:
+                if exact_law:
+                    old = candidate_chunks.get(tc.chunk_id)
+                    old_score = old[1] if old else 0.0
+                    old_why = list(old[2]) if old else []
+                    candidate_chunks[tc.chunk_id] = (
+                        tc,
+                        max(old_score, best_cand_score * 1.05),
+                        old_why + ["target_entity_forced"],
+                        True,
+                    )
+                elif tc.chunk_id not in candidate_chunks:
                     candidate_chunks[tc.chunk_id] = (
                         tc,
                         best_cand_score * 0.8,
@@ -435,7 +522,7 @@ def retrieve_candidates(
     rerank_used = False
     rerank_scores: list[tuple[Chunk, float, list[str], bool]] = []
 
-    if client and config.RERANK_KEY and len(cand_list) > 1:
+    if client and config.ENABLE_RERANK and config.RERANK_KEY and len(cand_list) > 1:
         query_text = analysis.standalone_question
         if config.RERANK_WITH_INSTRUCTION:
             query_text = (
@@ -548,27 +635,32 @@ def retrieve_candidates(
                 dm.score = float(s)
                 dm.relevance = rel_val
 
-    # Sort documents by relevance descending
-    documents_list = sorted(doc_matches_map.values(), key=lambda d: d.relevance, reverse=True)
+    # Sort documents by target first, then relevance/raw score.  RRF relevance
+    # saturates at 1.0 for several documents, so relevance alone cannot keep a
+    # matched law above a contract that happens to share the same normalized
+    # top score.
+    documents_list = sorted(
+        doc_matches_map.values(),
+        key=lambda d: (d.doc_id not in target_doc_ids, -d.relevance, -d.score),
+    )
 
-    # 6. Check for broken internal refs in matched documents (e.g. 152-ФЗ ст. 6, 10, 11)
+    # 6. Broken internal refs are a property of the matched document. They
+    # must not be mixed into unresolved query entities: otherwise a question
+    # about any tax article gets all broken references from the whole KB.
     for dm in documents_list:
         doc = doc_map[dm.doc_id]
-        broken = doc.meta.get("broken_refs", [])
-        for b_ref in broken:
-            if b_ref not in unresolved.law_articles:
-                unresolved.law_articles.append(b_ref)
-                ref_errors.append(
-                    ReferenceError(
-                        kind="broken_internal_ref",
-                        where="kb_document",
-                        raw=b_ref,
-                        doc_id=doc.doc_id,
-                        clause=None,
-                        candidates=[],
-                        severity="warning",
-                    )
+        for b_ref in doc.meta.get("broken_refs", []):
+            ref_errors.append(
+                ReferenceError(
+                    kind="broken_internal_ref",
+                    where="kb_document",
+                    raw=b_ref,
+                    doc_id=dm.doc_id,
+                    clause=None,
+                    candidates=[],
+                    severity="warning",
                 )
+            )
 
     # 7. Check edition_missing error (if question specified an event date not covered by KB)
     if analysis.event_date:
@@ -611,15 +703,18 @@ def retrieve_candidates(
         if any(norm_str(org) in norm_str(d.title) or any(norm_str(org) in norm_str(p) for p in d.parties) for d in documents_list):
             entity_matches.append(org)
 
-    low_confidence = (best_raw_bm25 < 7.0 and max_rel < 0.25)
+    low_confidence = not evidence_list
     if rerank_used and max_rel < config.RERANK_EMPTY_THRESHOLD:
         low_confidence = True
 
     # If user explicitly asked about an entity/contract number not found in KB
-    if (unresolved.party_names or unresolved.contract_numbers) and not entity_matches:
+    if (unresolved.party_names or unresolved.contract_numbers or unresolved.law_articles) and not entity_matches:
         low_confidence = True
 
-    topic_match = len(documents_list) > 0
+    topic_match = bool(documents_list) and not (
+        (unresolved.party_names or unresolved.contract_numbers or unresolved.law_articles)
+        and not entity_matches
+    )
     applicable_ed_ids = [d.doc_id for d in documents_list if d.applicable_edition]
 
     signals = Signals(

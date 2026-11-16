@@ -4,6 +4,13 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
+try:
+    from dotenv import load_dotenv
+
+    load_dotenv(Path(__file__).resolve().parent.parent / ".env", override=False)
+except ImportError:
+    pass
+
 
 def env(name: str, default: str = "") -> str:
     value = os.getenv(name, "").strip()
@@ -36,14 +43,14 @@ def env_bool(name: str, default: bool) -> bool:
 # Platform paths and endpoints
 DATA_DIR = Path(env("DATA_DIR", "data"))
 
-_raw_base = env("LLM_BASE_URL") or env("BASE_URL") or env("OPENAI_BASE_URL")
+_raw_base = env("LLM_BASE_URL") or env("BASE_URL") or env("OPENAI_BASE_URL") or env("DEEPSEEK_BASE_URL")
 API_BASE = _raw_base.rstrip("/") if _raw_base else ""
 
-LLM_KEY = env("LLM_API_KEY") or env("OPENAI_API_KEY")
+LLM_KEY = env("LLM_API_KEY") or env("OPENAI_API_KEY") or env("DEEPSEEK_API_KEY")
 EMBED_KEY = env("EMBEDDER_API_KEY") or LLM_KEY
 RERANK_KEY = env("RERANKER_API_KEY") or LLM_KEY
 
-LLM_MODEL = env("LLM_MODEL") or env("GEN_MODEL") or env("OPENAI_MODEL", "deepseek/deepseek-v4.1-flash")
+LLM_MODEL = env("LLM_MODEL") or env("GEN_MODEL") or env("OPENAI_MODEL") or env("DEEPSEEK_MODEL", "deepseek/deepseek-v4.1-flash")
 EMB_MODEL = env("EMB_MODEL", "baai/bge-m3")
 RERANKER_MODEL = env("RERANKER_MODEL", "Qwen/Qwen3-Reranker-8B")
 
@@ -62,6 +69,7 @@ CONTEXT_MAX_CHARS = env_int("CONTEXT_MAX_CHARS", 12000, 1000, 50000)
 
 RERANK_EMPTY_THRESHOLD = env_float("RERANK_EMPTY_THRESHOLD", 0.15, 0.0, 1.0)
 RERANK_WITH_INSTRUCTION = env_bool("RERANK_WITH_INSTRUCTION", True)
+ENABLE_RERANK = env_bool("ENABLE_RERANK", True)
 ENABLE_QUERY_LLM = env_bool("ENABLE_QUERY_LLM", True)
 
 # Boosts and penalties

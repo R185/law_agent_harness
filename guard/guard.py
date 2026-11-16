@@ -35,8 +35,12 @@ import time
 from dataclasses import dataclass, field
 from typing import Callable, Optional, Sequence, Union
 
-import guard_prompts as P
-import guard_rules as R
+try:  # package import: from guard import Guard
+    from . import guard_prompts as P
+    from . import guard_rules as R
+except ImportError:  # direct script: python guard/guard_eval.py
+    import guard_prompts as P
+    import guard_rules as R
 
 __all__ = [
     "Guard", "Finding", "Turn", "InputVerdict", "DocResult", "ContextResult", "OutputVerdict",
@@ -816,10 +820,11 @@ def llm_from_env(timeout: float = 90.0, max_tokens: int = 1500) -> Optional[LLM]
     import urllib.request
 
     base = (os.environ.get("LLM_BASE_URL") or os.environ.get("OPENAI_BASE_URL")
-            or os.environ.get("BASE_URL") or "").strip().rstrip("/")
-    key = (os.environ.get("LLM_API_KEY") or os.environ.get("OPENAI_API_KEY") or "").strip()
+            or os.environ.get("BASE_URL") or os.environ.get("DEEPSEEK_BASE_URL") or "").strip().rstrip("/")
+    key = (os.environ.get("LLM_API_KEY") or os.environ.get("OPENAI_API_KEY")
+           or os.environ.get("DEEPSEEK_API_KEY") or "").strip()
     model = (os.environ.get("LLM_MODEL") or os.environ.get("OPENAI_MODEL")
-             or os.environ.get("GEN_MODEL") or "").strip()
+             or os.environ.get("GEN_MODEL") or os.environ.get("DEEPSEEK_MODEL") or "").strip()
     if not base or not key or not model:
         return None
 
