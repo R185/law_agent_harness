@@ -258,13 +258,10 @@ def test_origin_guard_is_unchanged_against_fixing_llm_judge() -> None:
     assert status.stdout.strip() == "", status.stdout
 
 
-def test_requirements_txt_does_not_contain_pytest() -> None:
+def test_requirements_txt_contains_pytest() -> None:
     text = (REPO / "requirements.txt").read_text(encoding="utf-8")
-    assert "pytest" not in text
-
-
-def test_requirements_dev_txt_contains_pytest() -> None:
-    text = (REPO / "requirements-dev.txt").read_text(encoding="utf-8")
     assert "pytest" in text
-    assert "pydantic" in text
-    assert "httpx" in text
+
+
+def test_requirements_dev_txt_is_removed() -> None:
+    assert not (REPO / "requirements-dev.txt").exists()
