@@ -5,7 +5,7 @@ import json
 import re
 import sys
 from dataclasses import dataclass, field
-from typing import Any, Sequence
+from typing import Any, Collection, Sequence
 
 # Конфигурация и API-клиент (Configuration & API client)
 from rag import config
@@ -95,6 +95,76 @@ MONTHS_GENITIVE = {
     "мае": "05", "июне": "06", "июле": "07", "августе": "08",
     "сентябре": "09", "октябре": "10", "ноябре": "11", "декабре": "12",
 }
+
+
+LAW_CODE_RE = r"(?:ТК|НК|ГК|ГПК|УПК|КоАП|ЖК|СК|ЗК|БК|ТК|ФЗ|Конституц[а-я]*)"
+LAW_ARTICLE_RE = re.compile(
+    r"(?:(?P<code>" + LAW_CODE_RE + r"(?:\s+РФ)?|\d{2,3}-ФЗ)\s*"
+    r"(?:,?\s*)?(?:ст\.?|статья|статьи|статье|статью|статьёй|статьею)\s*(?P<art>\d+(?:\.\d+)?))",
+    re.I,
+)
+LAW_ARTICLE_AFTER_RE = re.compile(
+    r"(?:ст\.?|статья|статьи|статье|статью|статьёй|статьею)\s*(?P<art>\d+(?:\.\d+)?)"
+    r"(?:\s+(?:закона|законом| закона))?\s*"
+    r"(?P<code>" + LAW_CODE_RE + r"(?:\s+РФ)?|\d{2,3}-ФЗ)",
+    re.I,
+)
+LAW_CODE_ONLY_RE = re.compile(r"(?<![А-ЯЁA-Z0-9])(?P<code>\d{2,3}-ФЗ)(?![А-ЯЁA-Z0-9])", re.I)
+
+
+def extract_law_refs(text: str) -> list[str]:
+    """Extract explicit law/article references for unresolved tracking."""
+    refs: list[str] = []
+
+    def add(code: str, art: str | None = None) -> None:
+        code = re.sub(r"\s+", " ", code.strip()).upper()
+        if art:
+            value = f"{code} ст. {art.rstrip('.')}"
+        else:
+            value = code
+        if value.lower() not in {r.lower() for r in refs}:
+            refs.append(value)
+
+    for match in LAW_ARTICLE_RE.finditer(text):
+        add(match.group("code"), match.group("art"))
+    for match in LAW_ARTICLE_AFTER_RE.finditer(text):
+        add(match.group("code"), match.group("art"))
+    for match in LAW_CODE_ONLY_RE.finditer(text):
+        add(match.group("code"))
+    return refs
+
+
+def _law_supported_by_text(law: str, text: str) -> bool:
+    """Reject LLM-invented law references that are absent from the question.
+
+    Used when the caller has no KB index (for example rag.eval): a reference
+    with an article is kept only when that article number occurs in the user
+    text; a code-only reference is kept when its code occurs in the text.
+    This prevents an analyzer from inventing, for example, ``ТК РФ ст. 293``
+    for a question that never mentions article 293.
+    """
+    article = re.search(r"\bст\.?\s*(\d+(?:\.\d+)?)", law, re.I)
+    if article:
+        number = re.escape(article.group(1))
+        return re.search(rf"(?<!\d){number}(?!\d)", text) is not None
+    code = re.search(
+        r"\b(?:ТК|НК|ГК|ГПК|УПК|КоАП|ЖК|СК|ЗК|БК|ФЗ)(?:\s+РФ)?\b|\b\d{2,3}-ФЗ\b",
+        law,
+        re.I,
+    )
+    return bool(code and code.group(0).casefold() in text.casefold())
+
+
+def _law_known_in_kb(law: str, known_laws: set[str]) -> bool:
+    """Accept an LLM law reference only when the KB really contains it."""
+    clean = norm_str(law).strip()
+    if not clean:
+        return False
+    if clean in known_laws:
+        return True
+    # A code without an article ("54-ФЗ") is valid when the KB has any
+    # article of that code. Full article references must match exactly.
+    return any(item.startswith(clean + " ") for item in known_laws)
 
 
 def extract_event_date_heuristic(text: str) -> str | None:
@@ -225,16 +295,21 @@ QUERY_ANALYZER_SYSTEM = """Ты — модуль анализа запросов
 
 
 def analyze_query(
-    raw_question: str, client: ApiClient | None = None, known_parties: Sequence[str] | None = None
+    raw_question: str,
+    client: ApiClient | None = None,
+    known_parties: Sequence[str] | None = None,
+    known_laws: Collection[str] | None = None,
 ) -> tuple[ParsedDialog, QueryAnalysis]:
     """Parse dialogue and analyze user question with LLM and robust heuristic fallback."""
     dialog = parse_dialog(raw_question)
     last_user = dialog.last_user
     history = dialog.history
+    known_law_set = {norm_str(x).strip() for x in (known_laws or []) if str(x).strip()}
 
     # Run heuristic extractor dynamically
     full_text = f"{history}\n{last_user}" if history else last_user
     h_orgs, h_doc_nums = extract_entities_heuristic(dialog, known_parties=known_parties)
+    h_laws = extract_law_refs(full_text)
     h_event_date = extract_event_date_heuristic(full_text)
 
     # Dynamic check for ambiguity in entities:
@@ -265,7 +340,7 @@ def analyze_query(
     analysis = QueryAnalysis(
         standalone_question=h_standalone,
         search_queries=h_queries,
-        entities={"organizations": h_orgs, "doc_numbers": h_doc_nums, "laws": []},
+        entities={"organizations": h_orgs, "doc_numbers": h_doc_nums, "laws": h_laws},
         event_date=h_event_date,
         ambiguous_entities=ambiguous,
         question_type="fact",
@@ -284,7 +359,8 @@ def analyze_query(
                 {"role": "user", "content": user_prompt},
             ],
             temperature=0.0,
-            max_tokens=400,
+            # «думающая» модель тратит лимит и на рассуждение: при 400 JSON обрывался
+            max_tokens=1500,
         )
         # Parse JSON from response
         first_brace = resp_str.find("{")
@@ -305,7 +381,17 @@ def analyze_query(
 
             merged_orgs = list(set(h_orgs + [str(o) for o in llm_entities.get("organizations", [])]))
             merged_nums = list(set(h_doc_nums + [str(n) for n in llm_entities.get("doc_numbers", [])]))
-            merged_laws = [str(l) for l in llm_entities.get("laws", [])]
+            llm_laws = [
+                str(law)
+                for law in llm_entities.get("laws", [])
+                if str(law).strip()
+                and (
+                    _law_known_in_kb(str(law), known_law_set)
+                    if known_laws is not None
+                    else _law_supported_by_text(str(law), full_text)
+                )
+            ]
+            merged_laws = list(dict.fromkeys(h_laws + llm_laws))
 
             merged_date = llm_event_date if llm_event_date and llm_event_date != "null" else h_event_date
 

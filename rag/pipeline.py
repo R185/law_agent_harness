@@ -112,7 +112,10 @@ class RAGPipeline:
         # Extract entities using KB known parties to avoid hardcoding
         known_parties = self.resolver.get_known_parties()
         dialog, analysis = analyze_query(
-            full_input, client=client, known_parties=known_parties
+            full_input,
+            client=client,
+            known_parties=known_parties,
+            known_laws=self.resolver.law_articles,
         )
 
         dense_fn = (
