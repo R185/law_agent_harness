@@ -1,0 +1,27 @@
+services:
+  law-agent:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: psb_law_agent
+    restart: unless-stopped
+    ports:
+      - "${PORT:-8765}:8765"
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      - PORT=8765
+      - HOST=0.0.0.0
+      - PYTHONUNBUFFERED=1
+      - KB_DIR=/app/knowledge-base
+      - DATA_DIR=/app/data
+    volumes:
+      - ./knowledge-base:/app/knowledge-base:ro
+      - ./data:/app/data
+    healthcheck:
+      test: ["CMD-SHELL", "python3 -c \"import urllib.request; urllib.request.urlopen('http://localhost:8765/api/health')\""]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 5s

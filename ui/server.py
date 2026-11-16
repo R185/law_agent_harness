@@ -13,9 +13,15 @@ from __future__ import annotations
 
 import os
 import re
+import sys
 import threading
 from pathlib import Path
 from typing import Any
+
+ROOT = Path(__file__).resolve().parent
+PROJECT_ROOT = ROOT.parent
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
 
 from fastapi import FastAPI
 from fastapi.responses import FileResponse, JSONResponse
@@ -25,9 +31,8 @@ from pydantic import BaseModel, Field
 from orchestrator.config import DATA_DIR
 from orchestrator.pipeline import Orchestrator
 
-ROOT = Path(__file__).resolve().parent
 INDEX_HTML = ROOT / "index.html"
-KB_DIR = Path(os.getenv("KB_DIR", "") or (ROOT.parent / "knowledge-base"))
+KB_DIR = Path(os.getenv("KB_DIR", "") or (PROJECT_ROOT / "knowledge-base"))
 
 
 class CapturingOrchestrator(Orchestrator):
@@ -162,3 +167,11 @@ def ask(payload: AskRequest) -> JSONResponse:
     except Exception as exc:  # noqa: BLE001 — UI должен показать причину, а не 500 без тела
         return JSONResponse({"detail": f"{type(exc).__name__}: {exc}"}, status_code=500)
     return JSONResponse({"answer": answer, "sources": rows})
+
+
+if __name__ == "__main__":
+    import uvicorn
+    port = int(os.getenv("PORT", "8765"))
+    host = os.getenv("HOST", "0.0.0.0")
+    uvicorn.run("ui.server:app", host=host, port=port, reload=False, ws="none")
+
